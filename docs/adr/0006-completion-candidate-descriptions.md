@@ -62,7 +62,7 @@ The full description table:
 | `check` | validate config and keychain refs | front |
 | `init` | install completion, create config & authorize keychain | front |
 | `completion` | print a completion script | front |
-| `--help` | show this help | front |
+| `--help` | show this help; any verb accepts --help | front |
 | `--verbose` | prints injected var names with their origin profile | front |
 | `<profile>` | `profile` (label) | front / `check --profile` / combination |
 | `set` | store a secret in the keychain | `secret` |

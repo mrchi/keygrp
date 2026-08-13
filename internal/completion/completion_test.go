@@ -27,7 +27,7 @@ func TestCompleteFront(t *testing.T) {
 			"check\tvalidate config and keychain refs",
 			"init\tinstall completion, create config & authorize keychain",
 			"completion\tprint a completion script",
-			"--help\tshow this help",
+			"--help\tshow this help; any verb accepts --help",
 		}}},
 		{[]string{"c"}, Result{Candidates: []string{
 			"check\tvalidate config and keychain refs",
@@ -40,7 +40,7 @@ func TestCompleteFront(t *testing.T) {
 			"check\tvalidate config and keychain refs",
 			"init\tinstall completion, create config & authorize keychain",
 			"completion\tprint a completion script",
-			"--help\tshow this help",
+			"--help\tshow this help; any verb accepts --help",
 		}}},
 		// kgx <TAB>: an unused --verbose flag first, then profiles — the whole
 		// grammar (the flag is run-scoped, so it belongs in this slot).
@@ -146,7 +146,7 @@ func TestCompleteNilConfig(t *testing.T) {
 		"check\tvalidate config and keychain refs",
 		"init\tinstall completion, create config & authorize keychain",
 		"completion\tprint a completion script",
-		"--help\tshow this help",
+		"--help\tshow this help; any verb accepts --help",
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Complete(nil cfg) = %#v, want %#v", got, want)

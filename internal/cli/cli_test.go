@@ -71,6 +71,23 @@ func TestParseKG(t *testing.T) {
 		{[]string{}, command{kind: "help"}},
 		{[]string{"-h"}, command{kind: "help"}},
 		{[]string{"--help"}, command{kind: "help"}},
+		{[]string{"run", "--help"}, command{kind: "help", help: runHelpText}},
+		// --verbose is consumed, then discarded: a help command carries only kind + help.
+		{[]string{"run", "--verbose", "--help"}, command{kind: "help", help: runHelpText}},
+		// --help after the combination is the target program's own arg, never kg's.
+		{[]string{"run", "aws", "terraform", "plan", "--help"}, command{kind: "run", profiles: []string{"aws"}, program: "terraform", args: []string{"plan", "--help"}}},
+		{[]string{"secret", "--help"}, command{kind: "help", help: secretHelpText}},
+		{[]string{"secret", "-h"}, command{kind: "help", help: secretHelpText}},
+		{[]string{"secret", "set", "--help"}, command{kind: "help", help: secretSetHelpText}},
+		{[]string{"secret", "get", "-h"}, command{kind: "help", help: secretGetHelpText}},
+		{[]string{"secret", "delete", "--help"}, command{kind: "help", help: secretDeleteHelpText}},
+		{[]string{"secret", "list", "--help"}, command{kind: "help", help: secretListHelpText}},
+		{[]string{"secret", "export", "--help"}, command{kind: "help", help: secretExportHelpText}},
+		{[]string{"secret", "import", "--help"}, command{kind: "help", help: secretImportHelpText}},
+		{[]string{"check", "--help"}, command{kind: "help", help: checkHelpText}},
+		{[]string{"check", "-h"}, command{kind: "help", help: checkHelpText}},
+		{[]string{"init", "--help"}, command{kind: "help", help: initHelpText}},
+		{[]string{"completion", "--help"}, command{kind: "help", help: completionHelpText}},
 	}
 	for _, tc := range cases {
 		got, err := parseKG(tc.args)
@@ -172,6 +189,82 @@ func TestRunCompleteSerialization(t *testing.T) {
 				t.Errorf("run(%v) stdout = %q, want %q", tc.args, out, tc.want)
 			}
 		})
+	}
+}
+
+// TestVerbHelpExitsZero pins the verb-level --help contract: every verb and
+// secret op accepts both -h and --help, each prints a focused usage block to
+// stdout and exits 0 (GNU §4.8.2), with nothing on stderr — never the exit-2
+// usage-error path.
+func TestVerbHelpExitsZero(t *testing.T) {
+	cases := [][]string{
+		{"--help"}, {"-h"},
+		{"run", "--help"}, {"run", "-h"},
+		{"secret", "--help"}, {"secret", "-h"},
+		{"secret", "set", "--help"}, {"secret", "set", "-h"},
+		{"secret", "get", "--help"}, {"secret", "get", "-h"},
+		{"secret", "delete", "--help"}, {"secret", "delete", "-h"},
+		{"secret", "list", "--help"}, {"secret", "list", "-h"},
+		{"secret", "export", "--help"}, {"secret", "export", "-h"},
+		{"secret", "import", "--help"}, {"secret", "import", "-h"},
+		{"check", "--help"}, {"check", "-h"},
+		{"init", "--help"}, {"init", "-h"},
+		{"completion", "--help"}, {"completion", "-h"},
+	}
+	for _, args := range cases {
+		stdoutR, stdoutW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		stderrR, stderrW, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldOut, oldErr := os.Stdout, os.Stderr
+		os.Stdout, os.Stderr = stdoutW, stderrW
+		code := KG(args)
+		os.Stdout, os.Stderr = oldOut, oldErr
+		stdoutW.Close()
+		stderrW.Close()
+		out, _ := io.ReadAll(stdoutR)
+		errOut, _ := io.ReadAll(stderrR)
+		if code != 0 {
+			t.Errorf("KG(%v) exit = %d, want 0", args, code)
+		}
+		if !strings.Contains(string(out), "usage") {
+			t.Errorf("KG(%v) stdout = %q, want a usage block", args, out)
+		}
+		if len(errOut) != 0 {
+			t.Errorf("KG(%v) stderr = %q, want empty (help goes to stdout)", args, errOut)
+		}
+	}
+}
+
+// TestParseSecretNoOpUsage pins the export/import fix in the empty-op error:
+// the message must list every secret op (ADR-0005's export/import joined the
+// older set/get/delete/list).
+func TestParseSecretNoOpUsage(t *testing.T) {
+	_, err := parseKG([]string{"secret"})
+	if err == nil {
+		t.Fatal("parseKG(secret) = nil error, want error")
+	}
+	for _, want := range []string{"set", "get", "delete", "list", "export", "import"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("secret no-op error %q does not list %q", err, want)
+		}
+	}
+}
+
+// TestSecretBogusHelpIsUnknownOp pins that `kg secret bogus --help` stays an
+// unknown-op error: secretOpHelpText returns "" for a non-op, so --help is
+// honored only under a real op and never pretends a typo'd op exists.
+func TestSecretBogusHelpIsUnknownOp(t *testing.T) {
+	_, err := parseKG([]string{"secret", "bogus", "--help"})
+	if err == nil {
+		t.Fatal("parseKG(secret bogus --help) = nil error, want error")
+	}
+	if !strings.Contains(err.Error(), `unknown secret operation "bogus"`) {
+		t.Errorf("error = %q, want unknown secret operation", err)
 	}
 }
 

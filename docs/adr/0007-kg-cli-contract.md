@@ -3,7 +3,8 @@
 - Status: accepted
 - Date: 2026-08-13
 - Related: `docs/adr/0001-keygrp-design.md` §2, `docs/adr/0002-shell-completion-and-init.md`,
-  `docs/adr/0004-profile-combination.md`, `CONTEXT.md`
+  `docs/adr/0004-profile-combination.md`, `docs/adr/0008-verb-level-help.md`,
+  `CONTEXT.md`
 
 ## Context
 

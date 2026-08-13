@@ -259,7 +259,7 @@ var candidateDescriptions = map[string]string{
 	"check":           "validate config and keychain refs",
 	"init":            "install completion, create config & authorize keychain",
 	"completion":      "print a completion script",
-	"--help":          "show this help",
+	"--help":          "show this help; any verb accepts --help",
 	"--verbose":       "prints injected var names with their origin profile",
 	"set":             "store a secret in the keychain",
 	"get":             "show whether a secret exists",

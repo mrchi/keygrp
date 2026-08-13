@@ -127,7 +127,7 @@ kg secret import [--skip-existing] [<file>]  restore secrets from an archive
 kg check [--profile <combination>]  validate config and keychain refs
 kg init [--shell fish|zsh|bash]     install completion, create config & authorize keychain
 kg completion fish|zsh|bash         print a completion script
-kg --help                           show this help
+kg --help                           show this help; any verb accepts --help
 
 kgx [--verbose] <combination> <program> [args...]
     the run shorthand for 'kg run'

@@ -26,6 +26,16 @@ import (
 	"golang.org/x/term"
 )
 
+// secretOpsText is the `secret` op list, shared by usageText and
+// `kg secret --help` so the op lines are authored once.
+const secretOpsText = `  kg secret set [--stdin] <ref>       store a secret in the keychain
+  kg secret get [--reveal] <ref>      show whether a secret exists
+  kg secret delete <ref>              remove a secret
+  kg secret list                      list stored secret refs
+  kg secret export [<file>]           export secrets to a password-encrypted archive
+  kg secret import [--skip-existing] [<file>]  restore secrets from an archive
+`
+
 const usageText = `kg injects a group of environment variables into a target CLI,
 resolving secrets from the OS keychain at run time.
 
@@ -33,16 +43,10 @@ usage:
   kg run [--verbose] <combination> <program> [args...]
       run <program> with <combination>'s env (profiles comma-separated, e.g. aws,gcp);
       --verbose prints injected var names with their origin profile
-  kg secret set [--stdin] <ref>       store a secret in the keychain
-  kg secret get [--reveal] <ref>      show whether a secret exists
-  kg secret delete <ref>              remove a secret
-  kg secret list                      list stored secret refs
-  kg secret export [<file>]           export secrets to a password-encrypted archive
-  kg secret import [--skip-existing] [<file>]  restore secrets from an archive
-  kg check [--profile <combination>]  validate config and keychain refs
+` + secretOpsText + `  kg check [--profile <combination>]  validate config and keychain refs
   kg init [--shell fish|zsh|bash]     install completion, create config & authorize keychain
   kg completion fish|zsh|bash         print a completion script
-  kg --help                           show this help
+  kg --help                           show this help; any verb accepts --help
 
 The run shorthand kgx is equivalent to kg run:
   kgx [--verbose] <combination> <program> [args...]
@@ -56,6 +60,83 @@ exit codes: 0 ok, 1 configuration error, 2 usage or keychain error
 // the full surface belongs to `kg --help`.
 const kgxUsageText = `usage: kgx [--verbose] <combination> <program> [args...]
 `
+
+// Verb-level help texts, printed by `kg <verb> --help`. The wording mirrors
+// usageText so the two surfaces never drift apart.
+const (
+	runHelpText = `usage: kg run [--verbose] <combination> <program> [args...]
+    run <program> with <combination>'s env (profiles comma-separated, e.g. aws,gcp);
+    --verbose prints injected var names with their origin profile
+`
+
+	// secretHelpText reuses secretOpsText (the same op lines as usageText), so
+	// the op wording is authored once (ADR-0006).
+	secretHelpText = `usage: kg secret {set|get|delete|list|export|import} ...
+` + secretOpsText
+
+	checkHelpText = `usage: kg check [--profile <combination>]
+    validate config and keychain refs; with --profile, validate a
+    comma-separated combination's merged set
+`
+
+	// initHelpText mirrors usageText's wording (ADR-0006: help and completion
+	// reuse usageText, never a fourth surface).
+	initHelpText = `usage: kg init [--shell fish|zsh|bash]
+    install completion, create config & authorize keychain
+`
+
+	completionHelpText = `usage: kg completion fish|zsh|bash
+    print a completion script for the given shell
+`
+
+	// secret op help, printed by `kg secret <op> --help`.
+	secretSetHelpText = `usage: kg secret set [--stdin] <ref>
+    store a secret in the keychain; the value is prompted for and verified by
+    re-entry, or read from stdin with --stdin
+`
+
+	secretGetHelpText = `usage: kg secret get [--reveal] <ref>
+    show whether a secret exists; --reveal prints the value
+`
+
+	secretDeleteHelpText = `usage: kg secret delete <ref>
+    remove a secret from the keychain (asks for confirmation)
+`
+
+	secretListHelpText = `usage: kg secret list
+    list stored secret refs, never values; refs missing from the keychain are
+    flagged
+`
+
+	secretExportHelpText = `usage: kg secret export [<file>]
+    export secrets to a password-encrypted archive; the default file is
+    keygrp-secrets.kgx, "-" writes to stdout
+`
+
+	secretImportHelpText = `usage: kg secret import [--skip-existing] [<file>]
+    restore secrets from a password-encrypted archive; the default file is
+    keygrp-secrets.kgx, "-" reads from stdin
+`
+)
+
+// helpFlag reports whether token is a help request. GNU §4.8.2: --help prints
+// usage and exits 0, ignoring the rest of the arguments.
+func helpFlag(token string) bool {
+	return token == "-h" || token == "--help"
+}
+
+// parseHelp scans args for a help request; when one is present it returns a
+// kindHelp command carrying the given text. Used where every token is
+// kg-owned (management verbs); under run the scan is limited to the leading
+// position because the tail is the target program's own args.
+func parseHelp(cmd command, args []string, help string) (command, bool) {
+	if slices.ContainsFunc(args, helpFlag) {
+		cmd.kind = kindHelp
+		cmd.help = help
+		return cmd, true
+	}
+	return cmd, false
+}
 
 const (
 	kindRun        = "run"
@@ -101,6 +182,7 @@ type command struct {
 	initShell       string   // init --shell
 	completionShell string   // completion <shell>
 	completeWords   []string // __complete -- <words...>
+	help            string   // kindHelp: verb-level help text; empty = the entry point's usage
 }
 
 // KG is the entry point for the `kg` binary: management verbs plus the `run`
@@ -126,7 +208,11 @@ func runFor(args []string, parse func([]string) (command, error), help string) i
 		return code
 	}
 	if cmd.kind == kindHelp {
-		fmt.Print(help)
+		if cmd.help != "" {
+			fmt.Print(cmd.help)
+		} else {
+			fmt.Print(help)
+		}
 		return 0
 	}
 	return dispatch(cmd)
@@ -168,6 +254,9 @@ func parseKG(args []string) (command, error) {
 	case "run":
 		return parseRun(cmd, args[1:])
 	case "check":
+		if cmd, ok := parseHelp(cmd, args[1:], checkHelpText); ok {
+			return cmd, nil
+		}
 		cmd.kind = kindCheck
 		if len(args) == 3 && args[1] == "--profile" {
 			names, err := splitCombination(args[2])
@@ -180,6 +269,9 @@ func parseKG(args []string) (command, error) {
 		}
 		return cmd, nil
 	case "init":
+		if cmd, ok := parseHelp(cmd, args[1:], initHelpText); ok {
+			return cmd, nil
+		}
 		cmd.kind = kindInit
 		if len(args) == 3 && args[1] == "--shell" {
 			cmd.initShell = args[2]
@@ -188,6 +280,9 @@ func parseKG(args []string) (command, error) {
 		}
 		return cmd, nil
 	case "completion":
+		if cmd, ok := parseHelp(cmd, args[1:], completionHelpText); ok {
+			return cmd, nil
+		}
 		cmd.kind = kindCompletion
 		if len(args) == 2 {
 			cmd.completionShell = args[1]
@@ -224,8 +319,17 @@ func stripVerboseFlag(args []string) (bool, []string) {
 }
 
 // parseRun parses `kg run [--verbose] <combination> <program> [args...]`.
+// --help is a leading flag only: after the combination, every remaining token
+// is the target program's own args, so `kg run aws terraform plan --help`
+// runs terraform rather than showing kg's help.
 func parseRun(cmd command, rest []string) (command, error) {
 	cmd.verbose, rest = stripVerboseFlag(rest)
+	if len(rest) > 0 && helpFlag(rest[0]) {
+		cmd.kind = kindHelp
+		cmd.help = runHelpText
+		cmd.verbose = false // a help command carries only kind + help
+		return cmd, nil
+	}
 	if len(rest) < 2 {
 		return cmd, fmt.Errorf("usage: kg run [--verbose] <combination> <program> [args...]")
 	}
@@ -294,9 +398,43 @@ func splitCombination(token string) ([]string, error) {
 	return parts, nil
 }
 
+// secretOpHelpText returns the focused help text for a secret op, or "" for a
+// token that is not an op (so `kg secret bogus --help` stays an unknown-op
+// error rather than pretending bogus exists).
+func secretOpHelpText(op string) string {
+	switch op {
+	case opSet:
+		return secretSetHelpText
+	case opGet:
+		return secretGetHelpText
+	case opDelete:
+		return secretDeleteHelpText
+	case opList:
+		return secretListHelpText
+	case opExport:
+		return secretExportHelpText
+	case opImport:
+		return secretImportHelpText
+	}
+	return ""
+}
+
 func parseSecret(cmd command, rest []string) (command, error) {
 	if len(rest) == 0 {
-		return cmd, fmt.Errorf("usage: kg secret {set|get|delete|list} ...")
+		return cmd, fmt.Errorf("usage: kg secret {set|get|delete|list|export|import} ...")
+	}
+	// The op position may itself be a help request (`kg secret --help`).
+	if helpFlag(rest[0]) {
+		cmd.kind = kindHelp
+		cmd.help = secretHelpText
+		return cmd, nil
+	}
+	// Op-level help is resolved before any op state is recorded, so a help
+	// command carries only kind + help.
+	if h := secretOpHelpText(rest[0]); h != "" && slices.ContainsFunc(rest[1:], helpFlag) {
+		cmd.kind = kindHelp
+		cmd.help = h
+		return cmd, nil
 	}
 	cmd.secretOp = rest[0]
 	rest = rest[1:]
