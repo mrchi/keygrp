@@ -1,47 +1,84 @@
 # keygrp
 
-`kg` injects a group of environment variables into a target CLI, resolving
-the secret-bearing ones from the OS keychain at run time.
+[![Go Version](https://img.shields.io/badge/go-1.26-blue)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 
-The target program is unmodified and unaware. `kg run <profile> <program>`
-hands off via `exec(2)`, replacing its own process image with the target — so
-the target's PID, TTY, signals, and exit code behave exactly as if it were run
-directly, and secrets exist in memory only for the target's lifetime.
+Run a CLI with a group of environment variables — resolving the secret-bearing
+ones from your **OS keychain** at the moment the target starts. The config holds
+*references*, never values; nothing is sourced into your shell; and the target
+is handed off with `exec(2)`, so its PID, TTY, signals, and exit code behave
+exactly as if it were launched directly.
 
 ```console
-$ kg run claude claude
+$ kgx deepseek claude
 ```
 
-`kgx` is the run shorthand — `kgx claude claude` means `kg run claude claude`,
-like `uvx` means `uv tool run`. There are two binaries: `kg` carries the whole
-surface (management verbs plus `run`), `kgx` is run-only.
+`kgx` is how you run things day to day; `kg run deepseek claude` is the long
+form of the same command, just as `uv tool run` is the long form of `uvx`. Two
+binaries: `kg` carries the whole surface (management verbs plus `run`), `kgx`
+is run-only. One invocation can also merge several profiles —
+`kgx aws,gcp terraform` pulls in `aws` and `gcp` at once.
 
-## Why
+## Contents
 
-Environment variables are the standard way to configure CLI tools, but putting
-secrets in them has two problems: they sit in your shell (and any process you
-spawn) whether you need them or not, and they are unversioned by nature.
+- [Why keygrp](#why-keygrp)
+- [Features](#features)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Secrets](#secrets)
+- [Shell completion](#shell-completion)
+- [Security model](#security-model)
+- [Platform support](#platform-support)
+- [Limitations](#limitations)
+- [Documentation](#documentation)
+- [Development](#development)
+- [License](#license)
+
+## Why keygrp
+
+Environment variables are the standard way to configure CLIs, but putting
+secrets in them has two problems: they sit in your shell — and every process you
+spawn — whether you need them or not, and they are unversioned by nature.
 
 keygrp flips the default:
 
-- Secrets live in the **OS keychain**, referenced — never stored — in a TOML
+- **Secrets live in the OS keychain**, referenced — never stored — in a TOML
   config.
 - **On-demand injection**: a secret only reaches a process when a profile that
   references it is run.
 - **No shell-init loading**: profiles are never sourced into your shell.
 
-See [`docs/adr/0001-keygrp-design.md`](docs/adr/0001-keygrp-design.md) for the
-full decision record and [`.scratch/keygrp/spec.md`](.scratch/keygrp/spec.md)
-for the spec. The `kg`/`kgx` CLI split is recorded in
-[`docs/adr/0007-kg-cli-contract.md`](docs/adr/0007-kg-cli-contract.md).
+## Features
+
+- **Keychain-backed secrets** — store once with `kg secret set`, reference from
+  any number of profiles. Values never touch the config or shell history; the
+  only stdout exception is the explicit `kg secret get --reveal` opt-in.
+- **Profile composition** — inherit variables across profiles with `extends`,
+  and merge several profiles at run time with comma-separated combinations.
+- **True `exec` handoff** — the target replaces kg's process image, so there is
+  no wrapper process, no PID indirection, and no post-run hooks to get in the
+  way.
+- **Shell completion** for fish, zsh, and bash — including delegating to the
+  *target command's own* completion after the profile position.
+- **Encrypted backup & restore** — `kg secret export` / `kg secret import`
+  move your secrets between machines in a password-encrypted archive.
+- **`kgx` to run, `kg` to manage** — the day-to-day invocation is
+  `kgx <profile> <program>`; the `kg run` long form and the management verbs
+  (`secret`, `check`, `init`, `completion`) live on `kg`.
 
 ## Install
 
-Requires Go 1.26+. From a checkout:
+Requires Go 1.26+. Install both binaries straight from GitHub — no checkout
+needed:
 
 ```console
-$ go install ./cmd/kg ./cmd/kgx
+$ go install github.com/mrchi/keygrp/cmd/kg@latest \
+    github.com/mrchi/keygrp/cmd/kgx@latest
 ```
+
+Prefer to build from a checkout? `go install ./cmd/kg ./cmd/kgx` also works.
 
 Upgrading from the pre-split `keygrp` binary? Uninstall it after switching:
 
@@ -51,135 +88,93 @@ $ rm "$(command -v keygrp)"
 
 ## Quick start
 
-1. Create `~/.config/keygrp/config.toml` (or run `kg init` first to write
-   a commented starter you fill in):
+1. **Initialize** — `kg init` writes a commented starter config at
+   `~/.config/keygrp/config.toml` if none exists, installs shell completion for
+   both `kg` and `kgx`, and runs a keychain probe so the macOS authorization
+   dialog appears now rather than mid-setup:
+
+   ```console
+   $ kg init
+   ```
+
+2. **Add a profile** — edit `~/.config/keygrp/config.toml` and declare the
+   environments you want to run with:
 
    ```toml
-   [profiles.claude]
-   ANTHROPIC_API_KEY = "keychain://anthropic-api-key"
+   [profiles.deepseek]
+   DEEPSEEK_API_KEY = "keychain://deepseek-api-key"
 
    [profiles.aws]
    AWS_ACCESS_KEY_ID = "keychain://aws-access-key-id"
    AWS_SECRET_ACCESS_KEY = "keychain://aws-secret-access-key"
    AWS_REGION = "ap-southeast-1"
+
+   [profiles.gcp]
+   GOOGLE_APPLICATION_CREDENTIALS = "keychain://gcp-credentials"
    ```
 
-2. Store the first secret (the first access shows a macOS keychain
-   authorization dialog — expected):
+3. **Store the secrets** — one `kg secret set` per keychain ref in the config,
+   each with the same prompt-and-confirm flow:
 
    ```console
-   $ kg secret set anthropic-api-key
-   Enter value for "anthropic-api-key": ********
-   Confirm value for "anthropic-api-key": ********
-   stored "anthropic-api-key"
+   $ kg secret set deepseek-api-key
+   Enter value for "deepseek-api-key": ********
+   Confirm value for "deepseek-api-key": ********
+   stored "deepseek-api-key"
    ```
 
-3. Validate everything resolves without running anything:
+   Repeat for `aws-access-key-id`, `aws-secret-access-key`, and
+   `gcp-credentials`.
+
+4. **Validate** everything resolves without running anything:
 
    ```console
    $ kg check
    all refs resolve
    ```
 
-4. Run a target with the profile's environment:
+5. **Run** a target with the profile's environment:
 
    ```console
-   $ kg run claude claude
-   # or, the shorthand:
-   $ kgx claude claude
+   $ kgx deepseek claude
    ```
 
-## Demo
+6. **Combine profiles** — merge several profiles' env in one invocation, no
+   config edit needed:
 
-A terminal session, top to bottom:
+   ```console
+   $ kgx aws,gcp terraform
+   ```
 
-```console
-$ kg init
-created config at /Users/chi/.config/keygrp/config.toml
-installed fish completion at /Users/chi/.config/fish/completions/kg.fish
-keychain: probe ok (nothing stored)
-
-$ kg secret set anthropic-api-key
-Enter value for "anthropic-api-key": ****************
-Confirm value for "anthropic-api-key": ****************
-stored "anthropic-api-key"
-
-$ kg check
-all refs resolve
-
-$ kg run claude claude
-… claude runs, its TTY and exit code passed through untouched …
-```
+   The members merge under the same no-shadowing rule as `extends` — see
+   [Combining profiles at run time](#combining-profiles-at-run-time) for the
+   rules.
 
 ## Usage
 
-```
-kg run [--verbose] <combination> <program> [args...]
-    run <program> with <combination>'s env (profiles comma-separated, e.g. aws,gcp);
-    --verbose prints injected var names with their origin profile
-
-kg secret set [--stdin] <ref>       store a secret in the keychain
-kg secret get [--reveal] <ref>      show whether a secret exists
-kg secret delete <ref>              remove a secret
-kg secret list                      list stored secret refs
-kg secret export [<file>]           export secrets to a password-encrypted archive
-kg secret import [--skip-existing] [<file>]  restore secrets from an archive
-kg check [--profile <combination>]  validate config and keychain refs
-kg init [--shell fish|zsh|bash]     install completion, create config & authorize keychain
-kg completion fish|zsh|bash         print a completion script
-kg --help                           show this help; any verb accepts --help
-
-kgx [--verbose] <combination> <program> [args...]
-    the run shorthand for 'kg run'
-```
+| Command | Description |
+|---|---|
+| `kgx [--verbose] <combination> <program> [args...]` | run `<program>` with `<combination>`'s env — the recommended, day-to-day invocation (profiles comma-separated, e.g. `aws,gcp`); `--verbose` prints each injected variable with its origin profile |
+| `kg run [--verbose] <combination> <program> [args...]` | the long form of `kgx` |
+| `kg secret set [--stdin] <ref>` | store a secret in the keychain (hidden prompt, verify by re-entry; `--stdin` for piped input) |
+| `kg secret get [--reveal] <ref>` | show whether a secret exists; `--reveal` prints its value |
+| `kg secret delete <ref>` | remove a secret, with confirmation |
+| `kg secret list` | list stored secret refs, flagging any missing from the keychain |
+| `kg secret export [<file>]` | write all secrets to a password-encrypted archive (`-` for stdout) |
+| `kg secret import [--skip-existing] [<file>]` | restore secrets from an archive (`-` for stdin) |
+| `kg check [--profile <combination>]` | validate config and keychain refs without running anything |
+| `kg init [--shell fish\|zsh\|bash]` | install completion, create a starter config, authorize the keychain |
+| `kg completion fish\|zsh\|bash` | print a completion script |
 
 Exit codes: `0` ok · `1` configuration error · `2` usage or keychain error.
-After handoff the target's exit code is returned verbatim.
-
-## Shell completion
-
-Run `kg init` in the shell you use (or `kg init --shell <name>` to target
-another). It detects the current shell, writes a comment-only starter config at
-the config path if none exists, installs the completion script — which registers
-**both** `kg` and `kgx` — and runs a read-only keychain probe so the macOS
-authorization dialog appears now rather than at first `secret set`:
-
-```
-$ kg init
-created config at /Users/chi/.config/keygrp/config.toml
-installed fish completion at /Users/chi/.config/fish/completions/kg.fish
-keychain: probe ok (nothing stored)
-```
-
-zsh needs one manual step kg cannot do for you — the script is written to
-`~/.zfunc/_kg`, but zsh only loads completion dirs listed in `fpath`:
-
-```console
-$ printf 'fpath+=(~/.zfunc)\nautoload -Uz compinit\ncompinit\n' >> ~/.zshrc
-```
-
-What completion covers:
-
-- after `kg` — the verbs (`run`, `secret`, `check`, `init`, `completion`) and
-  `--help`;
-- after `kg run` / after `kgx` — profile names (a partial combination such as
-  `aws,<TAB>` completes the remaining profiles, excluding already-selected ones);
-- after `kg secret` — the operation and its refs/flags (`secret export`
-  and `secret import` complete the `<file>` position as a file path);
-- after `kg run <profile>` / after `kgx <profile>` — command names;
-- after `kg run <profile> <command>` — **the command's own completion**,
-  delegated to it (the target must have its completion installed).
-
-Completion is generated from the config and refs registry at every `<TAB>`, so
-config and secret changes never require regenerating. Regenerate only when
-kg's own command structure changes: re-run `kg init` (or `kg
-completion <shell> > file` to place it manually).
+After handoff the target's exit code is returned verbatim. Every verb accepts
+`--help`.
 
 ## Configuration
 
 Path: `~/.config/keygrp/config.toml`, overridden by `$KEYGRP_CONFIG`. A single
-file; there is no multi-file merging. `kg init` writes a comment-only
-starter here when none exists, and never edits an existing config.
+file — there is no multi-file merging. `kg init` writes a comment-only starter
+here when none exists, and never edits an existing config.
 
 ### Value forms
 
@@ -196,9 +191,34 @@ starter here when none exists, and never edits an existing config.
 - Non-string values are a parse error; unknown keys within a profile are
   accepted; unknown top-level tables are ignored.
 
-Secrets are written to the keychain under service `keygrp`, account = the ref.
-kg tracks written refs in a registry file (`<config dir>/refs`) so
-`kg secret list` can enumerate them (the keychain backend cannot list items).
+### Profile inheritance (`extends`)
+
+A profile may inherit another profile's variables with the reserved `extends`
+key — a profile name, or an array of names:
+
+```toml
+[profiles.aws]
+AWS_ACCESS_KEY_ID = "keychain://aws-access-key-id"
+
+[profiles.terraform]
+extends = "aws"                                # inherit aws's variables
+TF_TOKEN = "keychain://terraform-token"
+```
+
+A profile's **effective variable set** is the union of its own variables and
+every reachable base's — the transitive closure of `extends`, deduplicated by
+profile (a diamond collapses to one copy). Rules:
+
+- **No shadowing** — two distinct declarations of the same variable name within
+  one profile's reachable set is a configuration error, judged by name
+  regardless of value. A conflict invalidates only the profile that reaches it;
+  `kg check` reports all conflicts, `kg run` fails fast.
+- **All-or-nothing** — a derived profile takes every variable of its bases;
+  there is no exclusion syntax.
+- **Fail fast at load** — a missing base or an `extends` cycle is a
+  configuration error, detected before any program lookup or keychain access,
+  so a broken chain never triggers a keychain prompt.
+- `extends` is consumed by kg, never injected.
 
 ### Combining profiles at run time
 
@@ -206,20 +226,81 @@ Name several profiles at once to merge their environments for a single
 invocation — no config edit needed:
 
 ```console
-$ kg run aws,gcp terraform
-# or the shorthand:
 $ kgx aws,gcp terraform
+# kg run aws,gcp terraform is the long form
 ```
 
-Two selected profiles that declare the same variable name is a configuration
-error; a variable both inherit from a shared base counts once. Order does not
-matter. Profile names cannot contain commas. `kg check --profile aws,gcp`
+Each member resolves its own `extends` chain, then the members merge under the
+same no-shadowing rule as `extends` — a shared base collapses to one copy; two
+declarations from distinct origins is a configuration error. Order does not
+matter (`aws,dev` ≡ `dev,aws`); profile names cannot contain commas; a leading,
+trailing, or double comma is a usage error. `kg check --profile aws,gcp`
 validates a combination without running anything.
+
+## Secrets
+
+Secrets are stored in the OS keychain under service `keygrp`, with the ref as
+the account. Because the keychain backend cannot list items, kg tracks written
+refs in a registry file (`<config dir>/refs`, written `0600`) that backs
+`kg secret list` and the export/import commands.
+
+### Backup & restore
+
+`kg secret export` captures every ref's value into a single
+password-encrypted archive (`keygrp-secrets.kgx` by default; `-` writes to
+stdout), and `kg secret import` restores it (`-` reads from stdin) — so moving
+secrets to a new machine is one ssh pipe away:
+
+```console
+$ kg secret export - | ssh host kg secret import -
+```
+
+The archive is a versioned envelope: PBKDF2-HMAC-SHA256 key derivation
+(600,000 iterations), AES-256-GCM encryption, and the header bound as
+authenticated data so a tampered or wrong-password archive fails decryption
+rather than silently downgrading. See
+[`docs/adr/0005-secret-export-import.md`](docs/adr/0005-secret-export-import.md)
+for the full format.
+
+## Shell completion
+
+Run `kg init` in the shell you use (or `kg init --shell <name>` to target
+another). It detects the current shell, writes a comment-only starter config at
+the config path if none exists, installs the completion script — which registers
+**both** `kg` and `kgx` — and runs a read-only keychain probe so the macOS
+authorization dialog appears now rather than at first `secret set`.
+
+zsh needs one manual step kg cannot do for you — the script is written to
+`~/.zfunc/_kg`, but zsh only loads completion dirs listed in `fpath`:
+
+```console
+$ printf 'fpath+=(~/.zfunc)\nautoload -Uz compinit\ncompinit\n' >> ~/.zshrc
+```
+
+What completion covers:
+
+- after `kg` — the verbs (`run`, `secret`, `check`, `init`, `completion`) and
+  `--help`;
+- after `kg run` / after `kgx` — profile names (a partial combination such as
+  `aws,<TAB>` completes the remaining profiles, excluding already-selected
+  ones);
+- after `kg secret` — the operation and its refs/flags (`secret export` and
+  `secret import` complete the `<file>` position as a file path);
+- after `kg run <profile>` / after `kgx <profile>` — command names;
+- after `kg run <profile> <command>` — **the command's own completion**,
+  delegated to it (the target must have its completion installed).
+
+Completion is generated from the config and refs registry at every `<TAB>`, so
+config and secret changes never require regenerating. Regenerate only when
+kg's own command structure changes: re-run `kg init` (or `kg
+completion <shell> > file` to place it manually).
 
 ## Security model
 
 - Secrets are never written to the config, to stdout (unless `kg secret get
   --reveal`), or to shell history — inline `--value` is rejected.
+- The refs registry holds only ref names, never values. It can drift if a
+  keychain item is deleted by hand; `kg secret list` flags the discrepancy.
 - Injection happens only at `exec`; a secret's memory lifetime equals the
   target process.
 - The guarantee is scoped to keygrp-managed secrets: pre-existing secrets you
@@ -230,11 +311,47 @@ validates a combination without running anything.
 ## Platform support
 
 macOS and Linux. The `exec(2)` handoff is POSIX; secrets use the macOS
-Keychain / Linux Secret Service via [go-keyring](https://github.com/zalando/go-keyring).
-Windows is out of scope.
+Keychain / Linux Secret Service via
+[go-keyring](https://github.com/zalando/go-keyring). Windows is out of scope.
 
 ## Limitations
 
 - `<program>` is an executable on `PATH`; shell aliases and functions are
   bypassed.
 - No post-run hooks or logging (a deliberate consequence of `exec` handoff).
+
+## Documentation
+
+The domain model and glossary live in
+[`CONTEXT.md`](CONTEXT.md); design decisions are recorded as ADRs in
+[`docs/adr/`](docs/adr/):
+
+| ADR | Topic |
+|---|---|
+| [0001](docs/adr/0001-keygrp-design.md) | overall design & environment override rules |
+| [0002](docs/adr/0002-shell-completion-and-init.md) | shell completion & `init` |
+| [0003](docs/adr/0003-profile-extends.md) | profile `extends` |
+| [0004](docs/adr/0004-profile-combination.md) | run-time profile combination |
+| [0005](docs/adr/0005-secret-export-import.md) | encrypted export / import |
+| [0006](docs/adr/0006-completion-candidate-descriptions.md) | completion candidate descriptions |
+| [0007](docs/adr/0007-kg-cli-contract.md) | the `kg` / `kgx` CLI contract |
+| [0008](docs/adr/0008-verb-level-help.md) | per-verb `--help` |
+
+## Development
+
+Requires Go 1.26+. Build and test from a checkout:
+
+```console
+$ go build ./cmd/...
+$ go test ./...
+```
+
+The issue tracker and spec live under
+[`.scratch/keygrp/`](.scratch/keygrp/). Contributions are welcome — open an
+issue or a pull request. Keep changes scoped, update the relevant ADR when
+behavior changes, and make sure the test suite passes. Commits follow the
+Conventional Commits spec.
+
+## License
+
+MIT © 2026 [mrchi](https://github.com/mrchi). See [LICENSE](LICENSE).
