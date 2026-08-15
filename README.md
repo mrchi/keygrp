@@ -71,14 +71,13 @@ keygrp flips the default:
 ## Install
 
 Requires Go 1.26+. Install both binaries straight from GitHub — no checkout
-needed:
+needed; the `cmd/...` pattern covers every command under `cmd/`:
 
 ```console
-$ go install github.com/mrchi/keygrp/cmd/kg@latest \
-    github.com/mrchi/keygrp/cmd/kgx@latest
+$ go install github.com/mrchi/keygrp/cmd/...@latest
 ```
 
-Prefer to build from a checkout? `go install ./cmd/kg ./cmd/kgx` also works.
+Prefer to build from a checkout? `go install ./cmd/...` also works.
 
 Upgrading from the pre-split `keygrp` binary? Uninstall it after switching:
 
