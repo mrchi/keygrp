@@ -133,6 +133,147 @@ func TestInstallPath(t *testing.T) {
 	}
 }
 
+// installFileByBase returns the InstallFile whose basename is base, failing
+// the test if none exists.
+func installFileByBase(t *testing.T, files []InstallFile, base string) InstallFile {
+	t.Helper()
+	for _, f := range files {
+		if filepath.Base(f.Path) == base {
+			return f
+		}
+	}
+	t.Fatalf("no install file with basename %q (got %d files)", base, len(files))
+	return InstallFile{}
+}
+
+// TestInstallFilesCoversRegisteredCommands pins the load-bearing invariant of
+// this fix: every command the generated script registers must have a matching
+// autoload file, because fish and bash-completion load completion files by
+// command name. Adding a third registered command without its autoload file
+// must fail this test.
+func TestInstallFilesCoversRegisteredCommands(t *testing.T) {
+	t.Run("fish", func(t *testing.T) {
+		script, err := ShellScript("fish")
+		if err != nil {
+			t.Fatal(err)
+		}
+		files, err := InstallFiles("fish")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool)
+		for _, f := range files {
+			got[filepath.Base(f.Path)] = true
+		}
+		for _, line := range strings.Split(script, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[0] == "complete" && fields[1] == "-c" {
+				want := fields[2] + ".fish"
+				if !got[want] {
+					t.Errorf("fish script registers %q but InstallFiles has no %s", fields[2], want)
+				}
+			}
+		}
+	})
+
+	t.Run("bash", func(t *testing.T) {
+		script, err := ShellScript("bash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		files, err := InstallFiles("bash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool)
+		for _, f := range files {
+			got[filepath.Base(f.Path)] = true
+		}
+		for _, line := range strings.Split(script, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 5 && fields[0] == "complete" && fields[len(fields)-2] == "_kg" {
+				want := fields[len(fields)-1]
+				if !got[want] {
+					t.Errorf("bash script registers %q but InstallFiles has no file %q", want, want)
+				}
+			}
+		}
+	})
+
+	t.Run("zsh", func(t *testing.T) {
+		script, err := ShellScript("zsh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		files, err := InstallFiles("zsh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) != 1 {
+			t.Fatalf("InstallFiles(zsh) = %d files, want 1", len(files))
+		}
+		if got := filepath.Base(files[0].Path); got != "_kg" {
+			t.Errorf("InstallFiles(zsh)[0] basename = %q, want _kg", got)
+		}
+		for _, name := range []string{"kg", "kgx"} {
+			if !strings.Contains(script, "#compdef kg kgx") && !strings.Contains(script, "#compdef "+name) {
+				t.Errorf("zsh script #compdef line does not list %q", name)
+			}
+		}
+	})
+}
+
+// TestInstallFilesCompanionsSourcePrimary asserts the companion autoload files
+// source the primary script, and that zsh (whose #compdef line registers both
+// commands) has no companion.
+func TestInstallFilesCompanionsSourcePrimary(t *testing.T) {
+	t.Run("fish", func(t *testing.T) {
+		files, err := InstallFiles("fish")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := installFileByBase(t, files, "kgx.fish")
+		if !strings.Contains(f.Content, "source (dirname (status filename))/kg.fish") {
+			t.Errorf("fish companion does not source primary: %q", f.Content)
+		}
+	})
+
+	t.Run("bash", func(t *testing.T) {
+		files, err := InstallFiles("bash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := installFileByBase(t, files, "kgx")
+		if !strings.Contains(f.Content, `source "${BASH_SOURCE[0]%/*}/kg"`) {
+			t.Errorf("bash companion does not source primary: %q", f.Content)
+		}
+	})
+
+	t.Run("zsh", func(t *testing.T) {
+		files, err := InstallFiles("zsh")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if base := filepath.Base(f.Path); base == "kgx" || base == "kgx.fish" {
+				t.Errorf("zsh should have no companion file, got %s", f.Path)
+			}
+		}
+	})
+}
+
+// TestInstallFilesUnknownShell asserts InstallFiles reports an unsupported
+// shell through the shared unknownShellError helper.
+func TestInstallFilesUnknownShell(t *testing.T) {
+	files, err := InstallFiles("tcsh")
+	if err == nil {
+		t.Errorf("InstallFiles(tcsh) = %v, nil error; want error", files)
+	}
+	if files != nil {
+		t.Errorf("InstallFiles(tcsh) = %v, want nil files on error", files)
+	}
+}
+
 func TestValidShell(t *testing.T) {
 	for _, s := range []string{"fish", "zsh", "bash"} {
 		if !ValidShell(s) {

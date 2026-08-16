@@ -50,6 +50,43 @@ func InstallPath(shell string) (string, error) {
 	return "", unknownShellError(shell)
 }
 
+// InstallFile is one file `kg init` writes for a shell's completion.
+type InstallFile struct {
+	Path    string // absolute install path
+	Content string // file contents
+}
+
+// InstallFiles returns every file `kg init` must write for the given shell.
+// The primary script registers completion for both kg and kgx, but shell
+// autoloaders load completion files by command name, so companion autoload
+// files (kgx.fish for fish, kgx for bash) that source the primary are
+// required for kgx completion to load (ADR-0002). zsh needs no companion: its
+// #compdef line registers both commands in compinit's index.
+func InstallFiles(shell string) ([]InstallFile, error) {
+	path, err := InstallPath(shell)
+	if err != nil {
+		return nil, err
+	}
+	script, err := ShellScript(shell)
+	if err != nil {
+		return nil, err
+	}
+	files := []InstallFile{{Path: path, Content: script}}
+	switch shell {
+	case "fish":
+		files = append(files, InstallFile{
+			Path:    filepath.Join(filepath.Dir(path), "kgx.fish"),
+			Content: fishCompanion,
+		})
+	case "bash":
+		files = append(files, InstallFile{
+			Path:    filepath.Join(filepath.Dir(path), "kgx"),
+			Content: bashCompanion,
+		})
+	}
+	return files, nil
+}
+
 // ValidShell reports whether shell is a supported completion target.
 func ValidShell(shell string) bool {
 	return slices.Contains(validShells(), shell)
@@ -242,4 +279,24 @@ _kg() {
 
 complete -o bashdefault -o default -F _kg kg
 complete -o bashdefault -o default -F _kg kgx
+`
+
+// fishCompanion is the kgx autoload file for fish. fish loads completion
+// files by command name, so this companion sources kg.fish, which registers
+// completion for both kg and kgx.
+const fishCompanion = `# kgx completion for fish
+# fish loads completion files by command name, so this companion file makes
+# completing kgx load the shared script at kg.fish, which registers
+# completion for both kg and kgx.
+source (dirname (status filename))/kg.fish
+`
+
+// bashCompanion is the kgx autoload file for bash. bash-completion loads
+// files by command name, so this companion sources kg, which registers
+// completion for both kg and kgx.
+const bashCompanion = `# kgx completion for bash
+# bash-completion loads files by command name, so this companion file makes
+# completing kgx load the shared script at kg, which registers completion
+# for both kg and kgx.
+source "${BASH_SOURCE[0]%/*}/kg"
 `

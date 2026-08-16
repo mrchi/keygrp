@@ -221,7 +221,7 @@ func TestCompleteEdgeCases(t *testing.T) {
 		words []string
 		want  Result
 	}{
-		{[]string{"--verbose"}, Result{Candidates: []string{}}}, // --verbose is run-scoped, not a kg verb
+		{[]string{"--verbose"}, Result{Candidates: []string{}}},        // --verbose is run-scoped, not a kg verb
 		{[]string{"secret", "get", "aws-access-key-id", ""}, Result{}}, // ref already given
 		{[]string{"secret", "list", "x"}, Result{}},
 		{[]string{"secret", "get", "--reveal", ""}, Result{Candidates: []string{"aws-access-key-id\tsecret ref"}}},

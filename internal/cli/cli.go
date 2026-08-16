@@ -853,8 +853,8 @@ func runInit(cmd command) int {
 	if shell == "" {
 		return fail(2, "cannot detect shell; pass --shell fish|zsh|bash")
 	}
-	// ShellScript validates the shell and reports an unsupported one.
-	script, err := completion.ShellScript(shell)
+	// InstallFiles validates the shell and returns every file to write.
+	files, err := completion.InstallFiles(shell)
 	if err != nil {
 		return fail(2, "%v", err)
 	}
@@ -866,17 +866,15 @@ func runInit(cmd command) int {
 	} else if created {
 		fmt.Printf("created config at %s\n", cfgPath)
 	}
-	path, err := completion.InstallPath(shell)
-	if err != nil {
-		return fail(1, "%v", err)
+	for _, f := range files {
+		if err := os.MkdirAll(filepath.Dir(f.Path), 0o700); err != nil {
+			return fail(1, "%v", err)
+		}
+		if err := os.WriteFile(f.Path, []byte(f.Content), 0o644); err != nil {
+			return fail(1, "%v", err)
+		}
+		fmt.Printf("installed %s completion at %s\n", shell, f.Path)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fail(1, "%v", err)
-	}
-	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
-		return fail(1, "%v", err)
-	}
-	fmt.Printf("installed %s completion at %s\n", shell, path)
 	if shell == "zsh" {
 		fmt.Fprintln(os.Stderr, "note: add ~/.zfunc to fpath and run compinit, e.g.")
 		fmt.Fprintln(os.Stderr, `  printf 'fpath+=(~/.zfunc)\nautoload -Uz compinit\ncompinit\n' >> ~/.zshrc`)

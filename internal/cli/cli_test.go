@@ -270,28 +270,28 @@ func TestSecretBogusHelpIsUnknownOp(t *testing.T) {
 
 func TestParseKGErrors(t *testing.T) {
 	cases := [][]string{
-		{"aws", "terraform"},              // bare run is gone: unknown command
-		{"--verbose", "aws", "terraform"}, // --verbose is run-scoped, not global
-		{"aws"},                           // unknown command
-		{"claude"},                        // unknown command
-		{"secret"},                        // secret needs an op
-		{"secret", "set"},                 // set needs a ref
-		{"secret", "bogus"},               // unknown op
-		{"secret", "set", "--bogus", "x"}, // unknown flag
-		{"check", "--profile"},            // check --profile needs a value
-		{"check", "--profile", "aws,"},    // check --profile: trailing comma
-		{"init", "--shell"},               // init --shell needs a value
-		{"init", "bogus"},                 // init takes only --shell
-		{"completion"},                    // completion needs a shell
-		{"secret", "delete", "--reveal", "x"}, // --reveal only for get
-		{"secret", "get", "--stdin", "x"},     // --stdin only for set
-		{"secret", "set", "--reveal", "x"},    // --reveal only for get
-		{"secret", "delete", "--stdin", "x"},  // --stdin only for set
-		{"secret", "export", "--bogus"},       // unknown flag
-		{"secret", "export", "--reveal", "x"}, // --reveal only for get
-		{"secret", "export", "a", "b"},        // export takes at most one file
-		{"secret", "import", "--bogus"},       // unknown flag
-		{"secret", "import", "a", "b"},        // import takes at most one file
+		{"aws", "terraform"},                              // bare run is gone: unknown command
+		{"--verbose", "aws", "terraform"},                 // --verbose is run-scoped, not global
+		{"aws"},                                           // unknown command
+		{"claude"},                                        // unknown command
+		{"secret"},                                        // secret needs an op
+		{"secret", "set"},                                 // set needs a ref
+		{"secret", "bogus"},                               // unknown op
+		{"secret", "set", "--bogus", "x"},                 // unknown flag
+		{"check", "--profile"},                            // check --profile needs a value
+		{"check", "--profile", "aws,"},                    // check --profile: trailing comma
+		{"init", "--shell"},                               // init --shell needs a value
+		{"init", "bogus"},                                 // init takes only --shell
+		{"completion"},                                    // completion needs a shell
+		{"secret", "delete", "--reveal", "x"},             // --reveal only for get
+		{"secret", "get", "--stdin", "x"},                 // --stdin only for set
+		{"secret", "set", "--reveal", "x"},                // --reveal only for get
+		{"secret", "delete", "--stdin", "x"},              // --stdin only for set
+		{"secret", "export", "--bogus"},                   // unknown flag
+		{"secret", "export", "--reveal", "x"},             // --reveal only for get
+		{"secret", "export", "a", "b"},                    // export takes at most one file
+		{"secret", "import", "--bogus"},                   // unknown flag
+		{"secret", "import", "a", "b"},                    // import takes at most one file
 		{"secret", "import", "--skip-existing", "a", "b"}, // still at most one file
 		{"secret", "set", "--skip-existing", "x"},         // --skip-existing only for import
 		{"secret", "export", "--skip-existing"},           // --skip-existing only for import
@@ -316,6 +316,25 @@ func TestKGXErrors(t *testing.T) {
 	for _, args := range cases {
 		if _, err := parseKGX(args); err == nil {
 			t.Errorf("parseKGX(%v) = nil error, want error", args)
+		}
+	}
+}
+
+// TestRunInitFishWritesCompanion pins the kgx-completion fix at the CLI layer:
+// `kg init --shell fish` must write the companion kgx.fish autoload file
+// alongside kg.fish so fish's per-command autoloader picks up kgx completion.
+// HOME is sandboxed to a temp dir so the real user config is never touched.
+func TestRunInitFishWritesCompanion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if code := KG([]string{"init", "--shell", "fish"}); code != 0 {
+		t.Fatalf("KG(init --shell fish) = %d, want 0", code)
+	}
+	dir := filepath.Join(home, ".config", "fish", "completions")
+	for _, name := range []string{"kg.fish", "kgx.fish"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("expected %s to be written: %v", name, err)
 		}
 	}
 }
