@@ -338,6 +338,8 @@ The domain model and glossary live in
 | [0006](docs/adr/0006-completion-candidate-descriptions.md) | completion candidate descriptions |
 | [0007](docs/adr/0007-kg-cli-contract.md) | the `kg` / `kgx` CLI contract |
 | [0008](docs/adr/0008-verb-level-help.md) | per-verb `--help` |
+| [0009](docs/adr/0009-release-manual-tag-push-binaries.md) | manual tag-push release with cross-compiled binaries |
+| [0010](docs/adr/0010-platform-scope.md) | platform scope: ubuntu CI, no Windows |
 
 ## Development
 
