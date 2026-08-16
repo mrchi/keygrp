@@ -27,8 +27,8 @@ class Keygrp < Formula
 
   def caveats
     <<~EOS
-      Run once to install shell completion, create a starter config, and
-      authorize keychain access:
+      Run once to install shell completion, create a starter config (without
+      touching an existing one), and authorize keychain access:
 
         kg init
     EOS
