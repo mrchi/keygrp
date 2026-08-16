@@ -1,23 +1,23 @@
 class Keygrp < Formula
   desc "Run a CLI with keychain-backed environment variables"
   homepage "https://github.com/mrchi/keygrp"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/mrchi/keygrp/releases/download/v#{version}/keygrp-darwin-arm64.tar.gz"
-      sha256 "cadf6e45fae439bba5d51f68aaf97d01b5ce6022eacfbc3ce88b901b5abff787"
+      sha256 "96d22fc5257c93da2512c1a15a8fe67dd886afcc8548debc04258c72c48f4a6c"
     end
     on_intel do
       url "https://github.com/mrchi/keygrp/releases/download/v#{version}/keygrp-darwin-amd64.tar.gz"
-      sha256 "96a9deeff29049f8150550ac6552919c129f0ec57e6700926ab7e572b3f5e670"
+      sha256 "1a6f0178cb1ca93daacccba5f8b74905c57cf9c7c135417b7b5939c82b1c0bdb"
     end
   end
   on_linux do
     on_intel do
       url "https://github.com/mrchi/keygrp/releases/download/v#{version}/keygrp-linux-amd64.tar.gz"
-      sha256 "510eec2584c60942b4c49b35ea97f72b3f5ef63a528376942344c578f3a78180"
+      sha256 "eb6052dd15c0276917035df14a8855af664a878f50bfeae347244830604b119b"
     end
   end
 
