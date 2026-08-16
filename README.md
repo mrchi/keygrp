@@ -348,6 +348,13 @@ $ go build ./cmd/...
 $ go test ./...
 ```
 
+### Releasing
+
+Releases are manual and tag-driven. When main is green, cut one with
+`git tag vX.Y.Z && git push origin vX.Y.Z`. The release workflow builds `kg` and
+`kgx` for darwin/amd64, darwin/arm64, and linux/amd64, and attaches tarballs
+plus `sha256sums.txt` to a GitHub Release for the tag (see `docs/adr/0009`).
+
 The issue tracker and spec live under
 [`.scratch/keygrp/`](.scratch/keygrp/). Contributions are welcome — open an
 issue or a pull request. Keep changes scoped, update the relevant ADR when

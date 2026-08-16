@@ -105,7 +105,7 @@ func EnsureFile(path string) (bool, error) {
 		return false, err
 	}
 	if _, err := f.Write([]byte(DefaultFile)); err != nil {
-		f.Close()
+		_ = f.Close()
 		return false, err
 	}
 	if err := f.Close(); err != nil {

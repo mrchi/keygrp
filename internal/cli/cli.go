@@ -421,7 +421,7 @@ func secretOpHelpText(op string) string {
 
 func parseSecret(cmd command, rest []string) (command, error) {
 	if len(rest) == 0 {
-		return cmd, fmt.Errorf("usage: kg secret {set|get|delete|list|export|import} ...")
+		return cmd, fmt.Errorf("usage: kg secret {set|get|delete|list|export|import}")
 	}
 	// The op position may itself be a help request (`kg secret --help`).
 	if helpFlag(rest[0]) {
@@ -709,7 +709,7 @@ func readImportPasswordTTY() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot open controlling terminal for password prompt: %v", err)
 	}
-	defer tty.Close()
+	defer func() { _ = tty.Close() }()
 	return readOnce("Enter import password: ", int(tty.Fd()))
 }
 

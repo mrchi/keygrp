@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            dir="dist/keygrp-${os}-${arch}"
+            mkdir -p "${dir}"
+            CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags="-s -w" -o "${dir}/kg" ./cmd/kg
+            CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" go build -trimpath -ldflags="-s -w" -o "${dir}/kgx" ./cmd/kgx
+            tar -czf "dist/keygrp-${os}-${arch}.tar.gz" -C "${dir}" kg kgx
+          done
+          cd dist && sha256sum *.tar.gz > sha256sums.txt
+      - name: Attach assets to release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/sha256sums.txt

@@ -180,7 +180,7 @@ func TestRunCompleteSerialization(t *testing.T) {
 			os.Stdout = w
 			code := KG(tc.args)
 			os.Stdout = old
-			w.Close()
+			_ = w.Close()
 			out, _ := io.ReadAll(r)
 			if code != 0 {
 				t.Errorf("run(%v) exit = %d, want 0", tc.args, code)
@@ -224,8 +224,8 @@ func TestVerbHelpExitsZero(t *testing.T) {
 		os.Stdout, os.Stderr = stdoutW, stderrW
 		code := KG(args)
 		os.Stdout, os.Stderr = oldOut, oldErr
-		stdoutW.Close()
-		stderrW.Close()
+		_ = stdoutW.Close()
+		_ = stderrW.Close()
 		out, _ := io.ReadAll(stdoutR)
 		errOut, _ := io.ReadAll(stderrR)
 		if code != 0 {
@@ -412,7 +412,7 @@ extends = ["b", "c"]
 	os.Stderr = w
 	code := KG([]string{"run", "a", "terraform", "plan"})
 	os.Stderr = old
-	w.Close()
+	_ = w.Close()
 	out, _ := io.ReadAll(r)
 	if code != 1 {
 		t.Errorf("run(a terraform plan) = %d, want 1", code)
@@ -440,7 +440,7 @@ TOKEN = "plaintext-c"
 	os.Stderr = w
 	code := KG([]string{"run", "b,c", "terraform", "plan"})
 	os.Stderr = old
-	w.Close()
+	_ = w.Close()
 	out, _ := io.ReadAll(r)
 	if code != 1 {
 		t.Errorf("run(b,c terraform plan) = %d, want 1 (combination conflict)", code)
