@@ -40,6 +40,22 @@ jobs:
             tar -czf "dist/keygrp-${os}-${arch}.tar.gz" -C "${dir}" kg kgx
           done
           cd dist && sha256sum *.tar.gz > sha256sums.txt
+      - name: Bump Homebrew formula
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin main
+          git checkout main
+          chmod +x hack/bump-formula.sh
+          hack/bump-formula.sh "${GITHUB_REF_NAME#v}"
+          git add Formula/keygrp.rb
+          if git diff --cached --quiet; then
+            echo "formula already current; nothing to commit"
+          else
+            git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "chore(brew): bump formula to ${GITHUB_REF_NAME}"
+            git push origin main
+          fi
       - name: Attach assets to release
         uses: softprops/action-gh-release@v3
         with:

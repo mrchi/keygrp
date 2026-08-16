@@ -77,6 +77,14 @@ needed; the `cmd/...` pattern covers every command under `cmd/`:
 $ go install github.com/mrchi/keygrp/cmd/...@latest
 ```
 
+or via Homebrew (macOS, binary formula, no Go needed):
+
+```console
+$ brew tap mrchi/keygrp https://github.com/mrchi/keygrp
+$ brew trust mrchi/keygrp
+$ brew install keygrp
+```
+
 Prefer to build from a checkout? `go install ./cmd/...` also works.
 
 Upgrading from the pre-split `keygrp` binary? Uninstall it after switching:
@@ -340,6 +348,7 @@ The domain model and glossary live in
 | [0008](docs/adr/0008-verb-level-help.md) | per-verb `--help` |
 | [0009](docs/adr/0009-release-manual-tag-push-binaries.md) | manual tag-push release with cross-compiled binaries |
 | [0010](docs/adr/0010-platform-scope.md) | platform scope: ubuntu CI, no Windows |
+| [0011](docs/adr/0011-homebrew-tap-integrated.md) | integrated Homebrew tap with auto formula bump |
 
 ## Development
 
