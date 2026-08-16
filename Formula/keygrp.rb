@@ -25,6 +25,15 @@ class Keygrp < Formula
     bin.install "kg", "kgx"
   end
 
+  def caveats
+    <<~EOS
+      Run once to install shell completion, create a starter config, and
+      authorize keychain access:
+
+        kg init
+    EOS
+  end
+
   test do
     assert_match "kg", shell_output("#{bin}/kg --help")
   end
