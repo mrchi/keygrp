@@ -291,8 +291,11 @@ What completion covers:
 
 Completion is generated from the config and refs registry at every `<TAB>`, so
 config and secret changes never require regenerating. Regenerate only when
-kg's own command structure changes: re-run `kg init` (or `kg
-completion <shell> > file` to place it manually).
+kg's own command structure changes: re-run `kg init` — it installs completion
+for both `kg` and `kgx`, writing a `kgx` companion autoload file alongside the
+primary for fish and bash (those shells load completion files by command
+name). Placing the script by hand with `kg completion <shell> > file` installs
+`kg` only and skips the `kgx` companion.
 
 ## Security model
 

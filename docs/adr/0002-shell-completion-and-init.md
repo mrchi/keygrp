@@ -18,10 +18,11 @@ at the cost of rewriting the reviewed, committed command dispatch.
 ### Completion architecture
 
 - **No framework. DIY.**
-- `keygrp completion <shell>` prints a per-shell completion script
+- `kg completion <shell>` prints a per-shell completion script
   (`fish`/`zsh`/`bash`) to stdout. It is the low-level mechanism; `init` is the
   recommended user path.
-- `keygrp __complete -- <words...>` is the hidden protocol brain. It returns
+- `kg __complete -- <words...>` — shared by the `kgx` shorthand, both entry
+  points answer it (ADR-0007) — is the hidden protocol brain. It returns
   either candidate lines (keygrp-owned positions) or a directive, possibly with
   extra candidate lines that follow the directive line:
   - candidates: plain values, one per line (values beginning with
@@ -37,7 +38,9 @@ at the cost of rewriting the reviewed, committed command dispatch.
   completion, target-argument delegation, and file-path completion are
   shell-native (fish `complete -C`, zsh strip-and-`_normal`, bash
   `_command_offset`; fish `__fish_complete_path`, zsh `_files`, bash
-  `compgen -f`).
+  `compgen -f`). Each script registers both entry points: fish
+  `complete -c kg` and `complete -c kgx`, bash `complete -F _kg kg kgx`, zsh
+  `#compdef kg kgx`.
 - Protocol rules: always exit 0; stderr silent — a missing config means empty
   candidates, never an error.
 - **Regeneration**: required only when the directive vocabulary or shell
@@ -46,7 +49,7 @@ at the cost of rewriting the reviewed, committed command dispatch.
 
 ### `init` command
 
-- `keygrp init [--shell fish|zsh|bash]`:
+- `kg init [--shell fish|zsh|bash]`:
   1. detects the current shell — version variables (`$ZSH_VERSION`,
      `$BASH_VERSION`; fish exports none), then the parent process name, then
      `$SHELL` — overridable with `--shell`;
@@ -55,10 +58,17 @@ at the cost of rewriting the reviewed, committed command dispatch.
      parent dirs 0700) when none exists — an existing config is never
      modified, so re-running `init` after the user writes their real config
      is a no-op for the file;
-  3. writes the completion script to that shell's standard location
-     (fish `~/.config/fish/completions/keygrp.fish`, honoring
-     `$XDG_CONFIG_HOME`; zsh `~/.zfunc/_keygrp`;
-     bash `~/.local/share/bash-completion/completions/keygrp`);
+  3. writes the completion files to that shell's standard location. The shared
+     script registers both `kg` and `kgx`, but fish and bash-completion load
+     completion files by command name, so a companion autoload file sourcing
+     the primary is written alongside — without it, completing `kgx` finds no
+     completion file and falls back to path completion (zsh's `#compdef kg kgx`
+     needs none):
+     - fish `~/.config/fish/completions/kg.fish` and `kgx.fish`
+       (which `source`s `kg.fish`), honoring `$XDG_CONFIG_HOME`;
+     - zsh `~/.zfunc/_kg`;
+     - bash `~/.local/share/bash-completion/completions/kg` and `kgx`
+       (which sources `kg`);
   4. prints what it did — zsh additionally prints the `fpath` + `compinit`
      step it cannot perform for the user;
   5. runs a **read-only** keychain authorization probe (`Get` on a sentinel
@@ -77,9 +87,13 @@ at the cost of rewriting the reviewed, committed command dispatch.
 
 ### Positive
 
-- One-command setup (`keygrp init`) covering completion install, a starter
-  config when none exists, and keychain pre-authorization — so `keygrp check`
+- One-command setup (`kg init`) covering completion install, a starter
+  config when none exists, and keychain pre-authorization — so `kg check`
   succeeds on a fresh install before any editing.
+- The script is authored once and registered for both entry points; the
+  fish/bash companion files make the shell's per-command autoloader find it
+  under either name, with the invariant that every registered command has a
+  matching autoload file pinned by a test.
 - Completion logic is testable Go (the `__complete` brain); shell scripts are
   thin.
 - Data changes never require regenerating completion.
