@@ -38,9 +38,10 @@ runner with `CGO_ENABLED=0`. No macOS runner or osxcross toolchain is needed.
 - **Attachment**: assets are attached to the GitHub Release for the triggering
   tag via `softprops/action-gh-release` with `GITHUB_TOKEN`
   (`permissions: contents: write`).
-- **Future Homebrew tap, deferred**: the artifacts are deliberately shaped to be
-  consumed by a binary-style tap formula (per-arch `url` + `sha256` from
-  `sha256sums.txt`). The tap repo itself is out of scope for now.
+- **Homebrew tap**: the artifacts are deliberately shaped to be consumed by a
+  binary-style tap formula (per-arch `url` + `sha256` from `sha256sums.txt`).
+  The tap now ships — integrated into this repo, with the release workflow
+  auto-bumping the formula — see `docs/adr/0011-homebrew-tap-integrated.md`.
 
 ## Considered options
 
