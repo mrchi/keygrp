@@ -25,6 +25,23 @@ func TestShellScriptInvariants(t *testing.T) {
 	if !strings.Contains(fish, "complete -C") {
 		t.Error("fish script missing delegation via 'complete -C'")
 	}
+	// Delegation re-joins the dropped command line for complete -C. The string
+	// join must carry a standalone end-of-options -- before the escaped
+	// expansion: fish's string builtin parses options interspersed with
+	// arguments, so a dash-prefixed token (e.g. a partial --resu from the
+	// injected program) would otherwise be misread as an option and the whole
+	// completion errors out with "unknown option". fishJoinHasEndOfOptions
+	// accepts both fish-valid spellings (see TestFishJoinHasEndOfOptions).
+	var delegateLine string
+	for line := range strings.SplitSeq(fish, "\n") {
+		if strings.Contains(line, "string join") {
+			delegateLine = line
+			break
+		}
+	}
+	if !fishJoinHasEndOfOptions(delegateLine) {
+		t.Error("fish delegation string join missing end-of-options '--' before the escaped expansion")
+	}
 	if !strings.Contains(fish, "__fish_complete_path") {
 		t.Error("fish script missing file-path completion via __fish_complete_path")
 	}
@@ -83,6 +100,43 @@ func TestShellScriptInvariants(t *testing.T) {
 
 	if _, err := ShellScript("tcsh"); err == nil {
 		t.Error("ShellScript(tcsh) = nil error, want error")
+	}
+}
+
+// fishJoinHasEndOfOptions reports whether line — the delegation line that
+// re-joins the dropped command line for complete -C — marks the end of option
+// parsing with a standalone -- before the escaped expansion. Both fish-valid
+// spellings, `join ' ' -- (...)` and `join -- ' ' (...)`, satisfy it; the
+// buggy `join ' ' (...)` does not, and neither does a long option like
+// --verbose that merely contains dashes.
+func fishJoinHasEndOfOptions(line string) bool {
+	const sub = "string escape -- $full"
+	before, _, found := strings.Cut(line, sub)
+	if !found {
+		return false
+	}
+	return strings.Contains(before, "-- ")
+}
+
+// TestFishJoinHasEndOfOptions pins the accepted spellings: the regression test
+// must accept both fish-valid orderings and reject the buggy and misleading
+// forms, or it over-pins one spelling and rejects an equivalent fix.
+func TestFishJoinHasEndOfOptions(t *testing.T) {
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		{"separator first", `complete -C (string join ' ' -- (string escape -- $full))`, true},
+		{"marker first", `complete -C (string join -- ' ' (string escape -- $full))`, true},
+		{"no marker", `complete -C (string join ' ' (string escape -- $full))`, false},
+		{"long option not a marker", `complete -C (string join ' ' --verbose (string escape -- $full))`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := fishJoinHasEndOfOptions(c.line); got != c.want {
+				t.Errorf("fishJoinHasEndOfOptions(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
 	}
 }
 

@@ -122,7 +122,7 @@ function __kg_proto -d 'kg completion protocol for $argv[1]'
             end
             if test (count $full) -ge (math $drop + 1)
                 set -e full[1..$drop]
-                complete -C (string join ' ' (string escape -- $full))
+                complete -C (string join ' ' -- (string escape -- $full))
             end
         case '__directive:file'
             # complete the current token as a file path; extra candidates after
