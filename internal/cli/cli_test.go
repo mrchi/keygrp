@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mrchi/keygrp/internal/archive"
+	"github.com/mrchi/keygrp/internal/config"
 	"github.com/mrchi/keygrp/internal/exportimport"
 	"github.com/mrchi/keygrp/internal/keychain"
 )
@@ -66,12 +67,14 @@ func TestParseKG(t *testing.T) {
 		{[]string{"profile", "show", "aws", "--raw"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true}},
 		{[]string{"profile", "show", "--json", "aws"}, command{kind: "profile", profileOp: "show", profileName: "aws", jsonOut: true}},
 		{[]string{"profile", "show", "aws", "--raw", "--json"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true, jsonOut: true}},
-		// mutation ops are recognized but stash their remaining args verbatim
-		// until tickets 04/05/06 parse them.
+		// the remaining mutation ops are recognized but stash their remaining args
+		// verbatim until tickets 04/06 parse them; delete is fully parsed (05).
 		{[]string{"profile", "add", "aws", "A=1"}, command{kind: "profile", profileOp: "add", args: []string{"aws", "A=1"}}},
 		{[]string{"profile", "set", "aws", "A=1", "extends=b"}, command{kind: "profile", profileOp: "set", args: []string{"aws", "A=1", "extends=b"}}},
 		{[]string{"profile", "unset", "aws", "A"}, command{kind: "profile", profileOp: "unset", args: []string{"aws", "A"}}},
-		{[]string{"profile", "delete", "aws", "--force"}, command{kind: "profile", profileOp: "delete", args: []string{"aws", "--force"}}},
+		{[]string{"profile", "delete", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws"}},
+		{[]string{"profile", "delete", "--force", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
+		{[]string{"profile", "delete", "aws", "--force"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
 		{[]string{"profile", "rename", "a", "b"}, command{kind: "profile", profileOp: "rename", args: []string{"a", "b"}}},
 		{[]string{"check"}, command{kind: "check"}},
 		{[]string{"check", "--profile", "aws"}, command{kind: "check", checkTargets: []string{"aws"}}},
@@ -337,6 +340,12 @@ func TestParseKGErrors(t *testing.T) {
 		{"profile", "show", "a", "b"},                     // show takes one name
 		{"profile", "show", "--bogus"},                    // unknown flag
 		{"profile", "show", "a", "--bogus"},               // unknown flag
+		{"profile", "delete"},                             // delete needs a name
+		{"profile", "delete", "--force"},                  // --force still needs a name
+		{"profile", "delete", "a", "b"},                   // delete takes one name
+		{"profile", "delete", "--bogus"},                  // unknown flag
+		{"profile", "delete", "a", "--bogus"},             // unknown flag
+		{"profile", "list", "--force"},                    // --force is delete-only
 	}
 	for _, args := range cases {
 		if _, err := parseKG(args); err == nil {
@@ -392,6 +401,28 @@ func writeConfig(t *testing.T, content string) {
 		t.Fatal(err)
 	}
 	t.Setenv("KEYGRP_CONFIG", path)
+}
+
+// writeProfileConfig writes a config to a temp file, points $KEYGRP_CONFIG at
+// it, and returns the path so a test can assert the file's exact bytes after a
+// mutation.
+func writeProfileConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEYGRP_CONFIG", path)
+	return path
+}
+
+func readConfigBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestRunCheckConflictIsConfigError(t *testing.T) {
@@ -632,6 +663,48 @@ func captureStream(t *testing.T, stream **os.File, fn func() int) (int, string) 
 	return code, string(out)
 }
 
+// captureStdoutStderr runs fn with both os.Stdout and os.Stderr redirected,
+// returning the exit code and each stream's captured bytes.
+func captureStdoutStderr(t *testing.T, fn func() int) (code int, stdout, stderr string) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	code = fn()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = outW.Close()
+	_ = errW.Close()
+	out, _ := io.ReadAll(outR)
+	errOut, _ := io.ReadAll(errR)
+	return code, string(out), string(errOut)
+}
+
+// withStdin runs fn with os.Stdin redirected to a pipe carrying input. The pipe
+// is closed after the input is written, so an unread tail reads as EOF — the
+// same shape a non-terminal stdin reaches the confirm prompt with.
+func withStdin(t *testing.T, input string, fn func() int) int {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdin
+	os.Stdin = r
+	if _, err := w.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	defer func() { os.Stdin = old }()
+	return fn()
+}
+
 // profileFixture has a base profile (aws) and an extender (terraform) so the
 // read-path tests cover effective sets, origins, and declarations.
 const profileFixture = `[profiles.aws]
@@ -805,15 +878,206 @@ func TestRunProfileUnknownOpIsUsageError(t *testing.T) {
 	}
 }
 
+// deleteFixture has a base (aws) and a retireable extender (retired) so the
+// delete tests cover both confirmed deletion and rejected base deletion.
+const deleteFixture = `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.retired]
+extends = "aws"
+OLD = "true"
+`
+
+// TestRunProfileDeleteConfirmed pins the confirmed path: delete asks a y/N
+// prompt on stderr, an explicit y/yes (case-insensitive) deletes the profile
+// through the engine, the file re-parses with the profile gone and every byte
+// outside the block unchanged, and stdout stays clean for programmatic use
+// (ADR-0013).
+func TestRunProfileDeleteConfirmed(t *testing.T) {
+	for _, input := range []string{"y\n", "yes\n", "Y\n", "YES\n"} {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			path := writeProfileConfig(t, deleteFixture)
+			code, out, errOut := captureStdoutStderr(t, func() int {
+				return withStdin(t, input, func() int {
+					return KG([]string{"profile", "delete", "retired"})
+				})
+			})
+			if code != 0 {
+				t.Errorf("KG(profile delete retired) = %d, want 0", code)
+			}
+			if out != "" {
+				t.Errorf("stdout = %q, want empty (prompt goes to stderr, ADR-0013)", out)
+			}
+			if !strings.Contains(errOut, `delete profile "retired"? [y/N] `) {
+				t.Errorf("stderr = %q, want y/N prompt", errOut)
+			}
+			cfg, err := config.Parse(readConfigBytes(t, path))
+			if err != nil {
+				t.Fatalf("config after delete does not re-parse: %v", err)
+			}
+			if _, ok := cfg.Profiles["retired"]; ok {
+				t.Error("profile retired still present after delete")
+			}
+			if got, want := cfg.Profiles["aws"].Vars["AWS_REGION"], "ap-southeast-1"; got != want {
+				t.Errorf("aws touched: AWS_REGION = %q, want %q", got, want)
+			}
+			want := `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+`
+			if got := string(readConfigBytes(t, path)); got != want {
+				t.Errorf("deleted config:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteAbortsLeaveFileUntouched pins that anything other than an
+// explicit y/yes — n, no, an empty line, or EOF — aborts the delete and leaves
+// the file byte-identical, exiting 0.
+func TestRunProfileDeleteAbortsLeaveFileUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"n", "n\n"},
+		{"no", "no\n"},
+		{"N", "N\n"},
+		{"empty line", "\n"},
+		{"EOF", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeProfileConfig(t, deleteFixture)
+			code, errOut := captureStream(t, &os.Stderr, func() int {
+				return withStdin(t, tc.input, func() int {
+					return KG([]string{"profile", "delete", "retired"})
+				})
+			})
+			if code != 0 {
+				t.Errorf("KG(profile delete retired) with %q = %d, want 0 (aborted)", tc.name, code)
+			}
+			if !strings.Contains(errOut, `delete profile "retired"? [y/N] `) {
+				t.Errorf("stderr = %q, want y/N prompt", errOut)
+			}
+			if got := string(readConfigBytes(t, path)); got != deleteFixture {
+				t.Errorf("file changed by aborted delete:\n%s\nwant:\n%s", got, deleteFixture)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteForce pins that --force deletes without reading stdin, so
+// an agent on a closed non-terminal stdin never blocks (ADR-0013): no prompt is
+// printed and the profile is removed.
+func TestRunProfileDeleteForce(t *testing.T) {
+	path := writeProfileConfig(t, deleteFixture)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return withStdin(t, "", func() int { // closed pipe: an agent's stdin
+			return KG([]string{"profile", "delete", "--force", "retired"})
+		})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile delete --force retired) = %d, want 0", code)
+	}
+	if strings.Contains(errOut, "y/N") {
+		t.Errorf("stderr = %q, want no prompt under --force", errOut)
+	}
+	cfg, err := config.Parse(readConfigBytes(t, path))
+	if err != nil {
+		t.Fatalf("config after delete does not re-parse: %v", err)
+	}
+	if _, ok := cfg.Profiles["retired"]; ok {
+		t.Error("profile retired still present after --force delete")
+	}
+}
+
+// TestRunProfileDeleteMissingIsConfigError pins that deleting a missing profile
+// is a config error (exit 1, kg:-prefixed), rejected before any prompt is read.
+func TestRunProfileDeleteMissingIsConfigError(t *testing.T) {
+	writeConfig(t, `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+`)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		input string
+	}{
+		{"default", []string{"profile", "delete", "ghost"}, "n\n"},
+		{"force", []string{"profile", "delete", "--force", "ghost"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, errOut := captureStream(t, &os.Stderr, func() int {
+				return withStdin(t, tc.input, func() int {
+					return KG(tc.args)
+				})
+			})
+			if code != 1 {
+				t.Errorf("KG(%v) = %d, want 1 (config error)", tc.args, code)
+			}
+			if !strings.HasPrefix(errOut, "kg: ") {
+				t.Errorf("KG(%v) stderr = %q, want kg: prefix (ADR-0013)", tc.args, errOut)
+			}
+			if !strings.Contains(errOut, `profile "ghost" not found`) {
+				t.Errorf("KG(%v) stderr = %q, want not-found message", tc.args, errOut)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteDanglingBaseRejected pins reachability safety: deleting a
+// profile that another profile extends is rejected before any write (exit 1),
+// leaving the file byte-identical.
+func TestRunProfileDeleteDanglingBaseRejected(t *testing.T) {
+	path := writeProfileConfig(t, deleteFixture)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return withStdin(t, "", func() int {
+			return KG([]string{"profile", "delete", "--force", "aws"})
+		})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile delete --force aws) = %d, want 1 (dangling base)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, "unknown profile") {
+		t.Errorf("stderr = %q, want dangling-base message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != deleteFixture {
+		t.Errorf("file changed by rejected delete:\n%s\nwant:\n%s", got, deleteFixture)
+	}
+}
+
+// TestRunProfileDeleteUsageErrors pins the exit-2 surface for delete: malformed
+// invocations and flags that belong to another op fail with a usage error
+// (parse error, runFor dumps the entry usage to stderr).
+func TestRunProfileDeleteUsageErrors(t *testing.T) {
+	writeConfig(t, profileFixture)
+	for _, args := range [][]string{
+		{"profile", "delete"},                   // missing name
+		{"profile", "delete", "a", "b"},         // stray positional
+		{"profile", "delete", "aws", "--bogus"}, // unknown flag
+		{"profile", "list", "--force"},          // --force is delete-only
+	} {
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
+		}
+	}
+}
+
 // TestRunProfileMutationOpsStubbed pins the intermediate state: the mutation ops
-// parse and dispatch but exit 2 deterministically until tickets 04/05/06.
+// parse and dispatch but exit 2 deterministically until tickets 04/06. delete
+// is implemented (05) and has its own behavior tests.
 func TestRunProfileMutationOpsStubbed(t *testing.T) {
 	writeConfig(t, profileFixture)
 	for _, args := range [][]string{
 		{"profile", "add", "aws", "A=1"},
 		{"profile", "set", "aws", "A=1"},
 		{"profile", "unset", "aws", "A"},
-		{"profile", "delete", "aws", "--force"},
 		{"profile", "rename", "aws", "b"},
 	} {
 		code, errOut := captureStream(t, &os.Stderr, func() int {

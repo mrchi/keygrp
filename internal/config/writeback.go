@@ -54,6 +54,66 @@ func WriteProfile(path, name string, p Profile) error {
 	return atomicWrite(path, out)
 }
 
+// DeleteProfile removes the [profiles.<name>] block from the config file at
+// path, leaving every byte outside the block byte-identical: comments above the
+// block, the gap after its last key, trailing comments, and every other profile
+// are untouched.
+//
+// The candidate state is validated against the resolution rules before anything
+// is written: deleting a profile that another profile extends leaves a dangling
+// base in the extender's reachable set, so the whole candidate state is checked
+// and a violation rejects the write, returning the underlying resolution error
+// and leaving the file untouched (fail-fast, ADR-0012).
+//
+// The written file always re-parses. name must already exist in the file:
+// DeleteProfile removes an existing block and errors if it does not.
+func DeleteProfile(path, name string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	block, ok := locateProfileBlock(raw, name)
+	if !ok {
+		return fmt.Errorf("profile %q not found in %s", name, path)
+	}
+
+	if err := validateDeleteCandidate(raw, name); err != nil {
+		return err
+	}
+
+	out := make([]byte, 0, len(raw))
+	out = append(out, raw[:block.start]...)
+	out = append(out, raw[block.end:]...)
+
+	// Belt-and-braces over the surgical removal: the bytes about to be written
+	// must re-parse. Reject without writing if they would not.
+	if _, err := Parse(out); err != nil {
+		return err
+	}
+
+	return atomicWrite(path, out)
+}
+
+// validateDeleteCandidate builds the config the file would contain after the
+// profile is removed and validates every remaining profile in it under the same
+// rules kg run applies. Validating only the surviving profiles is required:
+// deleting a base changes the reachable set of every profile that extends it.
+// Returns the underlying resolution error (never rephrased) for any violation.
+func validateDeleteCandidate(raw []byte, name string) error {
+	cfg, err := Parse(raw)
+	if err != nil {
+		return err
+	}
+	delete(cfg.Profiles, name)
+	for _, n := range sortedProfileNames(cfg.Profiles) {
+		if _, err := cfg.Effective(n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateCandidate builds the config the file would contain after the edit
 // and validates every profile in it under the same rules kg run applies. The
 // edited profile's new state is swapped in; validating only it would miss

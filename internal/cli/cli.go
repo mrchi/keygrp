@@ -746,8 +746,26 @@ func parseProfile(cmd command, rest []string) (command, error) {
 		if cmd.profileName == "" {
 			return cmd, fmt.Errorf("usage: kg profile show <name> [--raw] [--json]")
 		}
-	case opAdd, opSet, opUnset, opDelete, opRename:
-		// Full parse and validation land in tickets 04/05/06; keep the remaining
+	case opDelete:
+		for _, a := range rest {
+			switch a {
+			case "--force":
+				cmd.force = true
+			default:
+				if strings.HasPrefix(a, "-") {
+					return cmd, fmt.Errorf("unknown flag %q for profile delete", a)
+				}
+				if cmd.profileName != "" {
+					return cmd, fmt.Errorf("usage: kg profile delete <name> [--force]")
+				}
+				cmd.profileName = a
+			}
+		}
+		if cmd.profileName == "" {
+			return cmd, fmt.Errorf("usage: kg profile delete <name> [--force]")
+		}
+	case opAdd, opSet, opUnset, opRename:
+		// Full parse and validation land in tickets 04/06; keep the remaining
 		// tokens verbatim so those tickets have the raw argv to work from.
 		cmd.args = rest
 	default:
@@ -785,12 +803,15 @@ func runProfile(cmd command) int {
 }
 
 // runProfileCmd implements the `kg profile` verb (ADR-0012). list and show are
-// the read path; the mutation ops (add|set|unset|delete|rename) are stubbed
-// here — exit 2, deterministically — until tickets 04/05/06 replace them.
+// the read path; delete is implemented; the mutation ops (add|set|unset|rename)
+// are stubbed here — exit 2, deterministically — until tickets 04/06 replace
+// them.
 func runProfileCmd(cmd command) int {
 	switch cmd.profileOp {
 	case opList, opShow:
 		// read path below
+	case opDelete:
+		return runProfileDelete(cmd)
 	default:
 		return fail(2, "profile %s is not yet implemented", cmd.profileOp)
 	}
@@ -806,6 +827,32 @@ func runProfileCmd(cmd command) int {
 	default:
 		return runProfileShow(cmd, cfg, path)
 	}
+}
+
+// runProfileDelete implements `kg profile delete <name> [--force]` (ADR-0012):
+// it removes the profile through the write-back engine. By default it asks for
+// a y/N confirmation on stderr and deletes only on an explicit y/yes; EOF or
+// any other answer aborts and leaves the file untouched (exit 0). --force skips
+// the prompt entirely, so an agent on a non-terminal stdin never blocks
+// (ADR-0013). A missing profile is a config error (exit 1) and is rejected
+// before any prompt.
+func runProfileDelete(cmd command) int {
+	path := configPath()
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	warnPermissive(path)
+	if _, ok := cfg.Profiles[cmd.profileName]; !ok {
+		return fail(1, "profile %q not found in %s", cmd.profileName, path)
+	}
+	if !cmd.force && !confirmProfileDelete(cmd.profileName) {
+		return 0
+	}
+	if err := config.DeleteProfile(path, cmd.profileName); err != nil {
+		return fail(1, "%v", err)
+	}
+	return 0
 }
 
 // runProfileList implements `kg profile list`: profile names in sorted order,
@@ -1383,6 +1430,20 @@ func readSecret(cmd command) (string, error) {
 // confirm asks for a y/N confirmation on stdin. EOF or any non-y answer is a no.
 func confirm(ref string) bool {
 	fmt.Fprintf(os.Stderr, "delete %q from keychain? [y/N] ", ref)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes"
+}
+
+// confirmProfileDelete asks for a y/N confirmation on stdin for deleting a
+// profile. The prompt goes to stderr so stdout stays clean for programmatic use
+// (ADR-0013). EOF or any non-y/yes answer is a no — the delete is aborted and
+// the file left untouched. --force skips this helper entirely.
+func confirmProfileDelete(name string) bool {
+	fmt.Fprintf(os.Stderr, "delete profile %q? [y/N] ", name)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false

@@ -372,3 +372,155 @@ func TestWriteProfileOmitsExtendsWhenEmpty(t *testing.T) {
 		t.Errorf("written = %q, want %q", got, want)
 	}
 }
+
+func TestDeleteProfileSurgical(t *testing.T) {
+	src := `# top comment
+[profiles.a]
+A = "1"
+
+[profiles.b]
+B = "1"
+# after-b comment
+
+[profiles.c]
+C = "1"
+
+# trailing comment
+`
+	path := writeTempConfig(t, src)
+
+	if err := DeleteProfile(path, "b"); err != nil {
+		t.Fatalf("DeleteProfile() error = %v", err)
+	}
+
+	// Only the [profiles.b] block is removed; the comment above a, the comment
+	// after b's last key (the gap), the trailing comment, and the a and c
+	// profiles are byte-identical.
+	want := `# top comment
+[profiles.a]
+A = "1"
+
+# after-b comment
+
+[profiles.c]
+C = "1"
+
+# trailing comment
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("deleted config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDeleteProfileReParses(t *testing.T) {
+	src := `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.terraform]
+extends = "aws"
+TF_TOKEN = "plaintext-token"
+`
+	path := writeTempConfig(t, src)
+
+	if err := DeleteProfile(path, "terraform"); err != nil {
+		t.Fatalf("DeleteProfile() error = %v", err)
+	}
+
+	cfg := mustParse(t, string(readFile(t, path)))
+	if _, ok := cfg.Profiles["terraform"]; ok {
+		t.Error("terraform still present after delete")
+	}
+	if got, want := cfg.Profiles["aws"].Vars["AWS_REGION"], "ap-southeast-1"; got != want {
+		t.Errorf("aws touched: AWS_REGION = %q, want %q", got, want)
+	}
+}
+
+func TestDeleteProfileRejectsDanglingBase(t *testing.T) {
+	// terraform extends aws; deleting aws leaves a dangling base in terraform's
+	// reachable set, so the whole candidate state is validated and the write is
+	// rejected before anything is written (fail-fast, ADR-0012).
+	src := `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.terraform]
+extends = "aws"
+TF_TOKEN = "plaintext-token"
+`
+	path := writeTempConfig(t, src)
+
+	err := DeleteProfile(path, "aws")
+	if err == nil {
+		t.Fatal("DeleteProfile() = nil error, want dangling-base rejection")
+	}
+	if !strings.Contains(err.Error(), "unknown profile") {
+		t.Errorf("error = %v, want dangling base surfaced as unknown profile", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestDeleteProfileNotFound(t *testing.T) {
+	path := writeTempConfig(t, "[profiles.a]\nA = \"1\"\n")
+	err := DeleteProfile(path, "ghost")
+	if err == nil {
+		t.Fatal("DeleteProfile() = nil error, want not found")
+	}
+	if !strings.Contains(err.Error(), `profile "ghost" not found`) {
+		t.Errorf("error = %v, want profile not found", err)
+	}
+	assertUnchanged(t, path, "[profiles.a]\nA = \"1\"\n")
+}
+
+func TestDeleteProfileLeavesNoStrayTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n\n[profiles.b]\nB = \"2\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteProfile(path, "b"); err != nil {
+		t.Fatalf("DeleteProfile() error = %v", err)
+	}
+
+	// The temp file was created in the config's directory and renamed away: no
+	// stray temp remains, and the file keeps the 0600 convention.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("config dir after delete = %v, want only config.toml", names)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("config mode after delete = %v, want 0600", got)
+	}
+}
+
+func TestDeleteProfileRejectionLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n\n[profiles.b]\nextends = \"a\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := DeleteProfile(path, "a"); err == nil {
+		t.Fatal("DeleteProfile() = nil error, want rejection")
+	}
+
+	// No write happened: bytes are unchanged and no temp file was left behind.
+	assertUnchanged(t, path, src)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		t.Errorf("config dir after rejected delete has %d entries, want only config.toml", len(entries))
+	}
+}
