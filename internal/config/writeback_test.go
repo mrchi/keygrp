@@ -524,3 +524,190 @@ func TestDeleteProfileRejectionLeavesFileUntouched(t *testing.T) {
 		t.Errorf("config dir after rejected delete has %d entries, want only config.toml", len(entries))
 	}
 }
+func TestAddProfileInsertsAtEnd(t *testing.T) {
+	src := `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+# trailing comment
+`
+	path := writeTempConfig(t, src)
+
+	p := Profile{Extends: []string{"aws"}, Vars: map[string]string{"GCP_PROJECT": "my-project"}}
+	if err := AddProfile(path, "gcp", p); err != nil {
+		t.Fatalf("AddProfile() error = %v", err)
+	}
+
+	// The new block is appended at the end of the file after a blank line; every
+	// existing byte — comments and the aws profile — is byte-identical.
+	want := `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+# trailing comment
+
+[profiles.gcp]
+extends = ["aws"]
+GCP_PROJECT = "my-project"
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("written config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestAddProfileEmptyConfig(t *testing.T) {
+	path := writeTempConfig(t, "")
+	if err := AddProfile(path, "aws", Profile{Vars: map[string]string{"A": "1"}}); err != nil {
+		t.Fatalf("AddProfile() error = %v", err)
+	}
+	want := "[profiles.aws]\nA = \"1\"\n"
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("written = %q, want %q", got, want)
+	}
+}
+
+func TestAddProfileReParses(t *testing.T) {
+	path := writeTempConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	p := Profile{Extends: []string{"aws"}, Vars: map[string]string{"B": "2"}}
+	if err := AddProfile(path, "gcp", p); err != nil {
+		t.Fatalf("AddProfile() error = %v", err)
+	}
+	cfg := mustParse(t, string(readFile(t, path)))
+	if got, want := cfg.Profiles["gcp"].Extends, []string{"aws"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gcp.Extends = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Profiles["gcp"].Vars, map[string]string{"B": "2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gcp.Vars = %#v, want %#v", got, want)
+	}
+	if got := cfg.Profiles["aws"].Vars["A"]; got != "1" {
+		t.Errorf("aws touched: A = %q, want 1", got)
+	}
+}
+
+func TestAddProfileExistingIsError(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	path := writeTempConfig(t, src)
+	err := AddProfile(path, "a", Profile{Vars: map[string]string{"B": "2"}})
+	if err == nil {
+		t.Fatal("AddProfile() = nil error, want already-exists error")
+	}
+	if !strings.Contains(err.Error(), `profile "a" already exists`) {
+		t.Errorf("error = %v, want already-exists error", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestAddProfileRejectsBadName(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	path := writeTempConfig(t, src)
+	// A name with a dot would render a header TOML parses as nested tables,
+	// silently corrupting the profile name, so it is rejected up front.
+	err := AddProfile(path, "a.b", Profile{Vars: map[string]string{"B": "2"}})
+	if err == nil {
+		t.Fatal("AddProfile() = nil error, want charset rejection")
+	}
+	if !strings.Contains(err.Error(), "outside [A-Za-z0-9_-]") {
+		t.Errorf("error = %v, want charset rejection", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestAddProfileRejectsConflictWithinNewProfile(t *testing.T) {
+	// The new profile merges two bases that declare the same variable from
+	// different origins: the conflict is in the new profile's own reachable set.
+	src := `[profiles.a]
+SHARED = "a"
+
+[profiles.b]
+SHARED = "b"
+`
+	path := writeTempConfig(t, src)
+	err := AddProfile(path, "c", Profile{Extends: []string{"a", "b"}})
+	if err == nil {
+		t.Fatal("AddProfile() = nil error, want no-shadowing conflict")
+	}
+	if !strings.Contains(err.Error(), "no-shadowing conflict") {
+		t.Errorf("error = %v, want no-shadowing conflict", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestAddProfileRejectsUnknownBase(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	path := writeTempConfig(t, src)
+	err := AddProfile(path, "b", Profile{Extends: []string{"ghost"}})
+	if err == nil {
+		t.Fatal("AddProfile() = nil error, want unknown base")
+	}
+	if !strings.Contains(err.Error(), "unknown profile") {
+		t.Errorf("error = %v, want unknown profile", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestAddProfileRejectsReservedVarKey(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	path := writeTempConfig(t, src)
+	err := AddProfile(path, "b", Profile{Vars: map[string]string{"extends": "a"}})
+	if err == nil {
+		t.Fatal("AddProfile() = nil error, want rejection of reserved key")
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestAddProfileLeavesNoStrayTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddProfile(path, "b", Profile{Vars: map[string]string{"B": "2"}}); err != nil {
+		t.Fatalf("AddProfile() error = %v", err)
+	}
+
+	// The temp file was created in the config's directory and renamed away: no
+	// stray temp remains, and the file keeps the 0600 convention.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("config dir after add = %v, want only config.toml", names)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("config mode after add = %v, want 0600", got)
+	}
+}
+
+func TestAddProfileRejectionLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddProfile(path, "b", Profile{Extends: []string{"ghost"}}); err == nil {
+		t.Fatal("AddProfile() = nil error, want rejection")
+	}
+
+	// No write happened: bytes are unchanged and no temp file was left behind.
+	assertUnchanged(t, path, src)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		t.Errorf("config dir after rejected add has %d entries, want only config.toml", len(entries))
+	}
+}
