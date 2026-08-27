@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +37,18 @@ const secretOpsText = `  kg secret set [--stdin] <ref>       store a secret in t
   kg secret import [--skip-existing] [<file>]  restore secrets from an archive
 `
 
+// profileOpsText is the `profile` op list, shared by usageText, `kg profile
+// --help`, and the completion op candidates so the op lines are authored once
+// (ADR-0008).
+const profileOpsText = `  kg profile list                      list profile names
+  kg profile show <name>               show a profile's effective variables
+  kg profile add <name> [KEY=value...] create a profile
+  kg profile set <name> KEY=value...   set or update variables
+  kg profile unset <name> KEY...       remove variables
+  kg profile delete <name>             delete a profile
+  kg profile rename <old> <new>        rename a profile and update extends references
+`
+
 const usageText = `kg injects a group of environment variables into a target CLI,
 resolving secrets from the OS keychain at run time.
 
@@ -43,7 +56,7 @@ usage:
   kg run [--verbose] <combination> <program> [args...]
       run <program> with <combination>'s env (profiles comma-separated, e.g. aws,gcp);
       --verbose prints injected var names with their origin profile
-` + secretOpsText + `  kg check [--profile <combination>]  validate config and keychain refs
+` + profileOpsText + secretOpsText + `  kg check [--profile <combination>]  validate config and keychain refs
   kg init [--shell fish|zsh|bash]     install completion, create config & authorize keychain
   kg completion fish|zsh|bash         print a completion script
   kg --help                           show this help; any verb accepts --help
@@ -117,6 +130,137 @@ const (
     restore secrets from a password-encrypted archive; the default file is
     keygrp-secrets.kgx, "-" reads from stdin
 `
+
+	// profileHelpText reuses profileOpsText (the same op lines as usageText), so
+	// the op wording is authored once (ADR-0008).
+	profileHelpText = `usage: kg profile {list|show|add|set|unset|delete|rename} ...
+` + profileOpsText + `
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+exit codes: 0 ok, 1 configuration error, 2 usage or keychain error
+`
+
+	// Profile op help, printed by `kg profile <op> --help`. Each op carries the
+	// complete ADR-0013 help standard: usage, flags, positional semantics,
+	// examples, exit codes, and the configuration environment variable.
+	profileListHelpText = `usage: kg profile list [--json]
+    list profile names in sorted order; --json emits structured output
+
+flags:
+  --json    emit {"profiles":[...]} instead of one name per line
+
+examples:
+  kg profile list
+  kg profile list --json
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileShowHelpText = `usage: kg profile show <name> [--raw] [--json]
+    show <name>'s effective variables with the profile that declared each one;
+    --raw prints the declaration (extends + vars); --json emits structured output
+
+flags:
+  --raw     print the raw declaration instead of the effective set
+  --json    emit structured output
+
+positionals:
+  <name>    profile to show
+
+examples:
+  kg profile show terraform
+  kg profile show terraform --raw
+  kg profile show terraform --json
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileAddHelpText = `usage: kg profile add <name> [KEY=value...] [-e]
+    create profile <name> with the given variables; -e opens $EDITOR on the new
+    profile's raw block; errors if <name> already exists
+
+flags:
+  -e        edit the new profile in $EDITOR before saving
+
+positionals:
+  <name>          profile to create ([A-Za-z0-9_-] only)
+  KEY=value...    initial variables
+
+examples:
+  kg profile add aws AWS_REGION=ap-southeast-1
+  kg profile add ci TF_TOKEN=keychain://ci-token
+  kg profile add scratch -e
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileSetHelpText = `usage: kg profile set <name> KEY=value...
+    set or update variables in <name>; extends=<name> manages base profiles;
+    errors if <name> does not exist; never auto-creates
+
+positionals:
+  <name>           profile to modify (must exist)
+  KEY=value...     variables to set; extends=<name> adds a base profile
+
+examples:
+  kg profile set aws AWS_REGION=us-west-2
+  kg profile set ci extends=aws
+  kg profile set ci TF_TOKEN=keychain://ci-token
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileUnsetHelpText = `usage: kg profile unset <name> KEY...
+    remove variables from <name>; errors on a missing key
+
+positionals:
+  <name>    profile to modify
+  KEY...    variables to remove
+
+examples:
+  kg profile unset aws AWS_REGION
+  kg profile unset ci TF_TOKEN AWS_ACCESS_KEY
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileDeleteHelpText = `usage: kg profile delete <name> [--force]
+    remove profile <name> after a y/N confirmation; --force skips the prompt;
+    errors if <name> does not exist
+
+flags:
+  --force   skip the y/N confirmation
+
+positionals:
+  <name>    profile to delete
+
+examples:
+  kg profile delete old
+  kg profile delete old --force
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
+
+	profileRenameHelpText = `usage: kg profile rename <old> <new>
+    rename <old> to <new>, rewriting every extends reference to <old> in the
+    same file; errors if <new> already exists
+
+positionals:
+  <old>    current profile name
+  <new>    new profile name ([A-Za-z0-9_-] only)
+
+examples:
+  kg profile rename aws aws-prod
+  kg profile rename claude claude-dev
+
+exit codes: 0 ok, 1 configuration error, 2 usage error
+configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
+`
 )
 
 // helpFlag reports whether token is a help request. GNU §4.8.2: --help prints
@@ -141,6 +285,7 @@ func parseHelp(cmd command, args []string, help string) (command, bool) {
 const (
 	kindRun        = "run"
 	kindSecret     = "secret"
+	kindProfile    = "profile"
 	kindCheck      = "check"
 	kindInit       = "init"
 	kindCompletion = "completion"
@@ -155,6 +300,15 @@ const (
 	opList   = "list"
 	opExport = "export"
 	opImport = "import"
+)
+
+// Profile op consts. opList, opSet, and opDelete are shared with secret (the
+// words are identical); the rest are profile-only.
+const (
+	opShow   = "show"
+	opAdd    = "add"
+	opUnset  = "unset"
+	opRename = "rename"
 )
 
 // defaultArchive is the file `secret export` writes and `secret import` reads
@@ -183,6 +337,15 @@ type command struct {
 	completionShell string   // completion <shell>
 	completeWords   []string // __complete -- <words...>
 	help            string   // kindHelp: verb-level help text; empty = the entry point's usage
+	// profile: opList | opShow | opAdd | opSet | opUnset | opDelete | opRename
+	profileOp      string   // profile: the op
+	profileName    string   // profile: target profile name (show; add/set/unset/delete in 04/05)
+	profileNewName string   // profile rename: the new name (ticket 06)
+	jsonOut        bool     // profile list/show --json
+	rawOut         bool     // profile show --raw
+	force          bool     // profile delete --force (ticket 05)
+	edit           bool     // profile add -e (ticket 04)
+	vars           []string // profile add/set: KEY=value... (04); unset: KEY... (05)
 }
 
 // KG is the entry point for the `kg` binary: management verbs plus the `run`
@@ -225,6 +388,8 @@ func dispatch(cmd command) int {
 		return runProfile(cmd)
 	case kindSecret:
 		return runSecret(cmd)
+	case kindProfile:
+		return runProfileCmd(cmd)
 	case kindCheck:
 		return runCheck(cmd)
 	case kindInit:
@@ -301,6 +466,9 @@ func parseKG(args []string) (command, error) {
 	case "secret":
 		cmd.kind = kindSecret
 		return parseSecret(cmd, args[1:])
+	case "profile":
+		cmd.kind = kindProfile
+		return parseProfile(cmd, args[1:])
 	default:
 		return cmd, unknownCommandError(args[0])
 	}
@@ -419,6 +587,29 @@ func secretOpHelpText(op string) string {
 	return ""
 }
 
+// profileOpHelpText returns the focused help text for a profile op, or "" for a
+// token that is not an op (so `kg profile bogus --help` stays an unknown-op
+// error rather than pretending bogus exists).
+func profileOpHelpText(op string) string {
+	switch op {
+	case opList:
+		return profileListHelpText
+	case opShow:
+		return profileShowHelpText
+	case opAdd:
+		return profileAddHelpText
+	case opSet:
+		return profileSetHelpText
+	case opUnset:
+		return profileUnsetHelpText
+	case opDelete:
+		return profileDeleteHelpText
+	case opRename:
+		return profileRenameHelpText
+	}
+	return ""
+}
+
 func parseSecret(cmd command, rest []string) (command, error) {
 	if len(rest) == 0 {
 		return cmd, fmt.Errorf("usage: kg secret {set|get|delete|list|export|import}")
@@ -497,6 +688,74 @@ func parseSecret(cmd command, rest []string) (command, error) {
 	return cmd, nil
 }
 
+// parseProfile parses `kg profile <op> ...` (ADR-0012), mirroring parseSecret:
+// a bare invocation lists the ops, a leading -h/--help resolves verb help, and
+// op-level help is resolved before any op state — so `kg profile bogus --help`
+// stays an unknown-op error (ADR-0008). list and show are fully parsed; the
+// mutation ops are recognized but stash their remaining args verbatim, with
+// their full parse/validation landing in tickets 04/05/06.
+func parseProfile(cmd command, rest []string) (command, error) {
+	if len(rest) == 0 {
+		return cmd, fmt.Errorf("usage: kg profile {list|show|add|set|unset|delete|rename}")
+	}
+	// The op position may itself be a help request (`kg profile --help`).
+	if helpFlag(rest[0]) {
+		cmd.kind = kindHelp
+		cmd.help = profileHelpText
+		return cmd, nil
+	}
+	// Op-level help is resolved before any op state is recorded, so a help
+	// command carries only kind + help.
+	if h := profileOpHelpText(rest[0]); h != "" && slices.ContainsFunc(rest[1:], helpFlag) {
+		cmd.kind = kindHelp
+		cmd.help = h
+		return cmd, nil
+	}
+	cmd.profileOp = rest[0]
+	rest = rest[1:]
+	switch cmd.profileOp {
+	case opList:
+		for _, a := range rest {
+			switch a {
+			case "--json":
+				cmd.jsonOut = true
+			default:
+				if strings.HasPrefix(a, "-") {
+					return cmd, fmt.Errorf("unknown flag %q for profile list", a)
+				}
+				return cmd, fmt.Errorf("usage: kg profile list")
+			}
+		}
+	case opShow:
+		for _, a := range rest {
+			switch a {
+			case "--raw":
+				cmd.rawOut = true
+			case "--json":
+				cmd.jsonOut = true
+			default:
+				if strings.HasPrefix(a, "-") {
+					return cmd, fmt.Errorf("unknown flag %q for profile show", a)
+				}
+				if cmd.profileName != "" {
+					return cmd, fmt.Errorf("usage: kg profile show <name> [--raw] [--json]")
+				}
+				cmd.profileName = a
+			}
+		}
+		if cmd.profileName == "" {
+			return cmd, fmt.Errorf("usage: kg profile show <name> [--raw] [--json]")
+		}
+	case opAdd, opSet, opUnset, opDelete, opRename:
+		// Full parse and validation land in tickets 04/05/06; keep the remaining
+		// tokens verbatim so those tickets have the raw argv to work from.
+		cmd.args = rest
+	default:
+		return cmd, fmt.Errorf("unknown profile operation %q", cmd.profileOp)
+	}
+	return cmd, nil
+}
+
 func runProfile(cmd command) int {
 	path := configPath()
 	cfg, err := loadConfig(path)
@@ -523,6 +782,140 @@ func runProfile(cmd command) int {
 		return fail(code, "%v", err)
 	}
 	return 0 // unreachable: runner.Run execs or returns an error
+}
+
+// runProfileCmd implements the `kg profile` verb (ADR-0012). list and show are
+// the read path; the mutation ops (add|set|unset|delete|rename) are stubbed
+// here — exit 2, deterministically — until tickets 04/05/06 replace them.
+func runProfileCmd(cmd command) int {
+	switch cmd.profileOp {
+	case opList, opShow:
+		// read path below
+	default:
+		return fail(2, "profile %s is not yet implemented", cmd.profileOp)
+	}
+	path := configPath()
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	warnPermissive(path)
+	switch cmd.profileOp {
+	case opList:
+		return runProfileList(cmd, cfg)
+	default:
+		return runProfileShow(cmd, cfg, path)
+	}
+}
+
+// runProfileList implements `kg profile list`: profile names in sorted order,
+// one per line by default, or structured JSON with --json.
+func runProfileList(cmd command, cfg *config.Config) int {
+	names := make([]string, 0, len(cfg.Profiles))
+	for name := range cfg.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if cmd.jsonOut {
+		data, err := json.MarshalIndent(struct {
+			Profiles []string `json:"profiles"`
+		}{names}, "", "  ")
+		if err != nil {
+			return fail(1, "%v", err)
+		}
+		fmt.Println(string(data))
+		return 0
+	}
+	for _, name := range names {
+		fmt.Println(name)
+	}
+	return 0
+}
+
+// profileShowJSON is the structured shape of `kg profile show --json`: the
+// profile name, its declaration's extends, and the variables — each with its
+// value and, in effective mode, the profile that declared it. In --raw mode
+// variables are the declaration's own and carry no origin (ADR-0013).
+type profileShowJSON struct {
+	Name      string                    `json:"name"`
+	Extends   []string                  `json:"extends,omitempty"`
+	Variables map[string]profileVarJSON `json:"variables"`
+}
+
+type profileVarJSON struct {
+	Value  string `json:"value"`
+	Origin string `json:"origin,omitempty"`
+}
+
+// runProfileShow implements `kg profile show <name>`: the effective variable
+// set with each variable's origin profile by default, the raw declaration with
+// --raw, and structured JSON with --json. An unknown profile is a
+// configuration error (exit 1), as is a broken reachable set.
+func runProfileShow(cmd command, cfg *config.Config, path string) int {
+	name := cmd.profileName
+	p, ok := cfg.Profiles[name]
+	if !ok {
+		return fail(1, "profile %q not found in %s", name, path)
+	}
+	if cmd.rawOut {
+		if cmd.jsonOut {
+			return printProfileJSON(name, p.Extends, p.Vars, nil)
+		}
+		return printProfileRaw(p.Extends, p.Vars)
+	}
+	env, origins, err := cfg.EffectiveSet([]string{name})
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	if cmd.jsonOut {
+		return printProfileJSON(name, p.Extends, env, origins)
+	}
+	for _, k := range sortedKeys(env) {
+		fmt.Printf("%s=%s (from %s)\n", k, env[k], origins[k])
+	}
+	return 0
+}
+
+// printProfileRaw prints a profile's declaration deterministically: the extends
+// line (when non-empty) followed by its own variables, sorted. Values are
+// Go-quoted so the output is unambiguous and stable.
+func printProfileRaw(extends []string, vars map[string]string) int {
+	if len(extends) > 0 {
+		fmt.Printf("extends = %s\n", strings.Join(extends, ", "))
+	}
+	for _, k := range sortedKeys(vars) {
+		fmt.Printf("%s = %q\n", k, vars[k])
+	}
+	return 0
+}
+
+// printProfileJSON renders `kg profile show --json`. origins may be nil (raw
+// mode), in which case each variable's origin is omitted.
+func printProfileJSON(name string, extends []string, env, origins map[string]string) int {
+	variables := make(map[string]profileVarJSON, len(env))
+	for k, v := range env {
+		variables[k] = profileVarJSON{Value: v, Origin: origins[k]}
+	}
+	data, err := json.MarshalIndent(profileShowJSON{
+		Name:      name,
+		Extends:   extends,
+		Variables: variables,
+	}, "", "  ")
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	fmt.Println(string(data))
+	return 0
+}
+
+// sortedKeys returns m's keys in sorted order, for deterministic output.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func runSecret(cmd command) int {

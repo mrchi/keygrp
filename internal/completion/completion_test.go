@@ -23,6 +23,7 @@ func TestCompleteFront(t *testing.T) {
 		// verb slot (ADR-0007).
 		{[]string{""}, Result{Candidates: []string{
 			"run\trun a program with a combination's env",
+			"profile\tmanage profiles in the config file",
 			"secret\tmanage secrets in the OS keychain",
 			"check\tvalidate config and keychain refs",
 			"init\tinstall completion, create config & authorize keychain",
@@ -36,6 +37,7 @@ func TestCompleteFront(t *testing.T) {
 		{[]string{"r"}, Result{Candidates: []string{"run\trun a program with a combination's env"}}},
 		{[]string{"kg", ""}, Result{Candidates: []string{
 			"run\trun a program with a combination's env",
+			"profile\tmanage profiles in the config file",
 			"secret\tmanage secrets in the OS keychain",
 			"check\tvalidate config and keychain refs",
 			"init\tinstall completion, create config & authorize keychain",
@@ -142,6 +144,7 @@ func TestCompleteNilConfig(t *testing.T) {
 	got := Complete([]string{""}, nil, nil)
 	want := Result{Candidates: []string{
 		"run\trun a program with a combination's env",
+		"profile\tmanage profiles in the config file",
 		"secret\tmanage secrets in the OS keychain",
 		"check\tvalidate config and keychain refs",
 		"init\tinstall completion, create config & authorize keychain",
@@ -150,6 +153,26 @@ func TestCompleteNilConfig(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Complete(nil cfg) = %#v, want %#v", got, want)
+	}
+	// Below the profile verb the op list stays static and op-level name
+	// positions degrade to static candidates when the config is missing/broken.
+	opList := []string{
+		"list\tlist profile names",
+		"show\tshow a profile's effective variables",
+		"add\tcreate a profile",
+		"set\tset or update a profile's variables",
+		"unset\tremove a profile's variables",
+		"delete\tdelete a profile",
+		"rename\trename a profile",
+	}
+	if got := Complete([]string{"profile", ""}, nil, nil); !reflect.DeepEqual(got, Result{Candidates: opList}) {
+		t.Errorf("Complete(profile, nil cfg) = %#v, want static op list %#v", got, opList)
+	}
+	if got := Complete([]string{"profile", "show", ""}, nil, nil); !reflect.DeepEqual(got, Result{Candidates: []string{
+		"--raw\tprint the raw declaration",
+		"--json\temit structured JSON output",
+	}}) {
+		t.Errorf("Complete(profile show, nil cfg) = %#v, want static flags only", got)
 	}
 }
 
@@ -189,6 +212,71 @@ func TestCompleteCheckProfile(t *testing.T) {
 		{[]string{"check", "--profile", ""}, Result{Candidates: []string{"aws\tprofile", "claude\tprofile"}}},
 		{[]string{"check", "--profile", "a"}, Result{Candidates: []string{"aws\tprofile"}}},
 		{[]string{"check", "--profile", "aws", ""}, Result{}}, // value already given
+	}
+	for _, tc := range cases {
+		if got := Complete(tc.words, cfg, nil); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Complete(%v) = %#v, want %#v", tc.words, got, tc.want)
+		}
+	}
+}
+
+// TestCompleteProfile pins the `kg profile` completion surface: the op list at
+// the verb position, then op-level positions. The three ops that share a word
+// with secret ("list", "set", "delete") carry profile wording, never secret's.
+func TestCompleteProfile(t *testing.T) {
+	cfg := &config.Config{Profiles: map[string]config.Profile{
+		"aws":    {Vars: map[string]string{"AWS_REGION": "x"}},
+		"claude": {},
+	}}
+	cases := []struct {
+		words []string
+		want  Result
+	}{
+		{[]string{"profile", ""}, Result{Candidates: []string{
+			"list\tlist profile names",
+			"show\tshow a profile's effective variables",
+			"add\tcreate a profile",
+			"set\tset or update a profile's variables",
+			"unset\tremove a profile's variables",
+			"delete\tdelete a profile",
+			"rename\trename a profile",
+		}}},
+		{[]string{"profile", "s"}, Result{Candidates: []string{
+			"show\tshow a profile's effective variables",
+			"set\tset or update a profile's variables",
+		}}},
+		{[]string{"profile", "l"}, Result{Candidates: []string{"list\tlist profile names"}}},
+		// list: only --json.
+		{[]string{"profile", "list", ""}, Result{Candidates: []string{"--json\temit structured JSON output"}}},
+		// show: name position offers the flags and profile names; after a name
+		// only the remaining flags.
+		{[]string{"profile", "show", ""}, Result{Candidates: []string{
+			"--raw\tprint the raw declaration",
+			"--json\temit structured JSON output",
+			"aws\tprofile", "claude\tprofile",
+		}}},
+		{[]string{"profile", "show", "a"}, Result{Candidates: []string{"aws\tprofile"}}},
+		{[]string{"profile", "show", "aws", ""}, Result{Candidates: []string{
+			"--raw\tprint the raw declaration",
+			"--json\temit structured JSON output",
+		}}},
+		{[]string{"profile", "show", "aws", "--raw", ""}, Result{Candidates: []string{"--json\temit structured JSON output"}}},
+		{[]string{"profile", "show", "aws", "--raw", "--json", ""}, Result{}},
+		{[]string{"profile", "show", "--raw", ""}, Result{Candidates: []string{
+			"--json\temit structured JSON output",
+			"aws\tprofile", "claude\tprofile",
+		}}},
+		// mutation ops: name positions from the config; flags alongside.
+		{[]string{"profile", "add", ""}, Result{Candidates: []string{"-e\tedit the profile in $EDITOR"}}},
+		{[]string{"profile", "set", ""}, Result{Candidates: []string{"aws\tprofile", "claude\tprofile"}}},
+		{[]string{"profile", "unset", ""}, Result{Candidates: []string{"aws\tprofile", "claude\tprofile"}}},
+		{[]string{"profile", "unset", "aws", ""}, Result{Candidates: []string{"AWS_REGION"}}},
+		{[]string{"profile", "delete", ""}, Result{Candidates: []string{
+			"--force\tskip the y/N confirmation",
+			"aws\tprofile", "claude\tprofile",
+		}}},
+		{[]string{"profile", "rename", ""}, Result{Candidates: []string{"aws\tprofile", "claude\tprofile"}}},
+		{[]string{"profile", "rename", "aws", ""}, Result{}},
 	}
 	for _, tc := range cases {
 		if got := Complete(tc.words, cfg, nil); !reflect.DeepEqual(got, tc.want) {
