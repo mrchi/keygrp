@@ -118,6 +118,28 @@ func EnsureFile(path string) (bool, error) {
 // (ADR-0003). It is consumed at parse time and never injected as a variable.
 const extendsKey = "extends"
 
+// nameCharset is the allowed character set for profile names and keychain
+// ref names (ADR-0012). Both are restricted so every name is a clean
+// shell/argv token and never collides with the combination separator. The
+// hyphen is included without position restrictions: a leading hyphen parses
+// fine and is rejected later by the argv layer, where it would read as a flag.
+const nameCharset = "[A-Za-z0-9_-]"
+
+// validName reports whether s is a non-empty name made only of nameCharset
+// characters.
+func validName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 // Parse decodes keygrp configuration from TOML. Unknown top-level tables are
 // ignored; variables must be strings; the reserved `extends` key accepts a
 // profile name or an array of names.
@@ -134,6 +156,9 @@ func Parse(data []byte) (*Config, error) {
 		if strings.Contains(name, ",") {
 			return nil, fmt.Errorf("profile %q: name contains a comma; commas are reserved as the combination separator (ADR-0004)", name)
 		}
+		if !validName(name) {
+			return nil, fmt.Errorf("profile %q: name contains a character outside %s", name, nameCharset)
+		}
 		p := Profile{Vars: map[string]string{}}
 		for key, val := range raw {
 			if key == extendsKey {
@@ -147,6 +172,9 @@ func Parse(data []byte) (*Config, error) {
 			s, ok := val.(string)
 			if !ok {
 				return nil, fmt.Errorf("profile %s: variable %q is %T, want string", name, key, val)
+			}
+			if ref, isRef := KeychainRef(s); isRef && !validName(ref) {
+				return nil, fmt.Errorf("profile %s: variable %q: keychain ref %q contains a character outside %s", name, key, ref, nameCharset)
 			}
 			p.Vars[key] = s
 		}
@@ -199,6 +227,9 @@ func checkExtendsName(s string) error {
 	}
 	if strings.Contains(s, ",") {
 		return fmt.Errorf("extends name %q contains a comma; extends takes profile names, never combinations (ADR-0004)", s)
+	}
+	if !validName(s) {
+		return fmt.Errorf("extends name %q contains a character outside %s", s, nameCharset)
 	}
 	return nil
 }
