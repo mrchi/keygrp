@@ -158,10 +158,10 @@ configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
 
 	profileShowHelpText = `usage: kg profile show <name> [--raw] [--json]
     show <name>'s effective variables with the profile that declared each one;
-    --raw prints the declaration (extends + vars); --json emits structured output
+    --raw prints the literal declaration block (re-parseable TOML); --json emits structured output
 
 flags:
-  --raw     print the raw declaration instead of the effective set
+  --raw     print the raw declaration block instead of the effective set
   --json    emit structured output
 
 positionals:
@@ -192,17 +192,18 @@ examples:
   kg profile add ci TF_TOKEN=keychain://ci-token
   kg profile add scratch -e
 
-exit codes: 0 ok, 1 configuration error, 2 usage error
+exit codes: 0 ok, 1 configuration error, 2 usage error (missing/failed $EDITOR with -e)
 configuration: $KEYGRP_CONFIG (default ~/.config/keygrp/config.toml)
 `
 
 	profileSetHelpText = `usage: kg profile set <name> KEY=value...
-    set or update variables in <name>; extends=<name> manages base profiles;
+    set or update variables in <name>; extends=<name> sets the base profile list;
     errors if <name> does not exist; never auto-creates
 
 positionals:
   <name>           profile to modify (must exist)
-  KEY=value...     variables to set; extends=<name> adds a base profile
+  KEY=value...     variables to set; extends=<name> sets the base profile list
+                   (comma-separated; empty clears)
 
 examples:
   kg profile set aws AWS_REGION=us-west-2
@@ -389,7 +390,7 @@ func dispatch(cmd command) int {
 	case kindSecret:
 		return runSecret(cmd)
 	case kindProfile:
-		return runProfileCmd(cmd)
+		return runProfileVerb(cmd)
 	case kindCheck:
 		return runCheck(cmd)
 	case kindInit:
@@ -867,9 +868,9 @@ func runProfile(cmd command) int {
 	return 0 // unreachable: runner.Run execs or returns an error
 }
 
-// runProfileCmd implements the `kg profile` verb (ADR-0012). list and show are
+// runProfileVerb implements the `kg profile` verb (ADR-0012). list and show are
 // the read path; add, set, unset, delete, and rename are the mutation path.
-func runProfileCmd(cmd command) int {
+func runProfileVerb(cmd command) int {
 	switch cmd.profileOp {
 	case opList, opShow:
 		// read path below
@@ -880,7 +881,9 @@ func runProfileCmd(cmd command) int {
 	case opRename:
 		return runProfileRename(cmd)
 	default:
-		return fail(2, "profile %s is not yet implemented", cmd.profileOp)
+		// Safety net: parseProfile rejects any op outside the seven, so this is
+		// never reached with a real op (ADR-0012).
+		return 2
 	}
 	path := configPath()
 	cfg, err := loadConfig(path)
@@ -913,7 +916,7 @@ func runProfileDelete(cmd command) int {
 	if _, ok := cfg.Profiles[cmd.profileName]; !ok {
 		return fail(1, "profile %q not found in %s", cmd.profileName, path)
 	}
-	if !cmd.force && !confirmProfileDelete(cmd.profileName) {
+	if !cmd.force && !confirmPrompt(fmt.Sprintf("delete profile %q? [y/N] ", cmd.profileName)) {
 		return 0
 	}
 	if err := config.DeleteProfile(path, cmd.profileName); err != nil {
@@ -1028,7 +1031,7 @@ func runProfileMutation(cmd command) int {
 		fmt.Printf("profile %q updated\n", cmd.profileName)
 		return 0
 	}
-	return 2
+	return 2 // safety net: runProfileVerb routes only add|set|unset here
 }
 
 // parseExtendsArg splits a comma-separated extends value into base profile
@@ -1056,7 +1059,7 @@ func parseExtendsArg(v string) []string {
 func addWithEditor(path, name string, p config.Profile) int {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
-		return fail(1, "$EDITOR is not set; set $EDITOR to edit the new profile, or drop -e")
+		return fail(2, "$EDITOR is not set; set $EDITOR to edit the new profile, or drop -e")
 	}
 	tmp, err := os.CreateTemp("", "kg-profile-*.toml")
 	if err != nil {
@@ -1079,7 +1082,7 @@ func addWithEditor(path, name string, p config.Profile) int {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return fail(1, "$EDITOR (%s) failed: %v", editor, err)
+		return fail(2, "$EDITOR (%s) failed: %v", editor, err)
 	}
 
 	edited, err := os.ReadFile(tmpPath)
@@ -1159,7 +1162,10 @@ func runProfileShow(cmd command, cfg *config.Config, path string) int {
 		if cmd.jsonOut {
 			return printProfileJSON(name, p.Extends, p.Vars, nil)
 		}
-		return printProfileRaw(p.Extends, p.Vars)
+		// The raw declaration is the exact block the engine renders (the same
+		// bytes `add -e` seeds), so it is real, re-parseable TOML.
+		fmt.Print(config.RenderProfileBlock(name, p))
+		return 0
 	}
 	env, origins, err := cfg.EffectiveSet([]string{name})
 	if err != nil {
@@ -1170,19 +1176,6 @@ func runProfileShow(cmd command, cfg *config.Config, path string) int {
 	}
 	for _, k := range sortedKeys(env) {
 		fmt.Printf("%s=%s (from %s)\n", k, env[k], origins[k])
-	}
-	return 0
-}
-
-// printProfileRaw prints a profile's declaration deterministically: the extends
-// line (when non-empty) followed by its own variables, sorted. Values are
-// Go-quoted so the output is unambiguous and stable.
-func printProfileRaw(extends []string, vars map[string]string) int {
-	if len(extends) > 0 {
-		fmt.Printf("extends = %s\n", strings.Join(extends, ", "))
-	}
-	for _, k := range sortedKeys(vars) {
-		fmt.Printf("%s = %q\n", k, vars[k])
 	}
 	return 0
 }
@@ -1251,7 +1244,7 @@ func runSecret(cmd command) int {
 		}
 		return 0
 	case opDelete:
-		if !confirm(cmd.secretRef) {
+		if !confirmPrompt(fmt.Sprintf("delete %q from keychain? [y/N] ", cmd.secretRef)) {
 			fmt.Println("aborted")
 			return 0
 		}
@@ -1678,23 +1671,11 @@ func readSecret(cmd command) (string, error) {
 	)
 }
 
-// confirm asks for a y/N confirmation on stdin. EOF or any non-y answer is a no.
-func confirm(ref string) bool {
-	fmt.Fprintf(os.Stderr, "delete %q from keychain? [y/N] ", ref)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && line == "" {
-		return false
-	}
-	ans := strings.ToLower(strings.TrimSpace(line))
-	return ans == "y" || ans == "yes"
-}
-
-// confirmProfileDelete asks for a y/N confirmation on stdin for deleting a
-// profile. The prompt goes to stderr so stdout stays clean for programmatic use
-// (ADR-0013). EOF or any non-y/yes answer is a no — the delete is aborted and
-// the file left untouched. --force skips this helper entirely.
-func confirmProfileDelete(name string) bool {
-	fmt.Fprintf(os.Stderr, "delete profile %q? [y/N] ", name)
+// confirmPrompt asks for a y/N confirmation on stdin, printing prompt (which
+// carries the subject and the [y/N] suffix) to stderr so stdout stays clean for
+// programmatic use (ADR-0013). EOF or any non-y/yes answer is a no.
+func confirmPrompt(prompt string) bool {
+	fmt.Fprint(os.Stderr, prompt)
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil && line == "" {
 		return false

@@ -795,7 +795,7 @@ func TestRunProfileShowRaw(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show terraform --raw) = %d, want 0", code)
 	}
-	want := "extends = aws\nTF_TOKEN = \"plaintext-token\"\n"
+	want := "[profiles.terraform]\nextends = [\"aws\"]\nTF_TOKEN = \"plaintext-token\"\n"
 	if out != want {
 		t.Errorf("KG(profile show terraform --raw) stdout = %q, want %q", out, want)
 	}
@@ -1389,7 +1389,7 @@ func TestRunProfileAddSeedsVars(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
 	}
-	want := "GCP_PROJECT = \"my-project\"\nTF_TOKEN = \"keychain://ci-token\"\n"
+	want := "[profiles.gcp]\nGCP_PROJECT = \"my-project\"\nTF_TOKEN = \"keychain://ci-token\"\n"
 	if out != want {
 		t.Errorf("KG(profile show gcp --raw) = %q, want %q", out, want)
 	}
@@ -1463,7 +1463,7 @@ func TestRunProfileAddEditor(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
 	}
-	want := "EDIT = \"from-editor\"\nGCP = \"seed\"\n"
+	want := "[profiles.gcp]\nEDIT = \"from-editor\"\nGCP = \"seed\"\n"
 	if out != want {
 		t.Errorf("KG(profile show gcp --raw) = %q, want %q", out, want)
 	}
@@ -1484,7 +1484,7 @@ func TestRunProfileAddEditorNoop(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
 	}
-	if out != "GCP = \"seed\"\n" {
+	if out != "[profiles.gcp]\nGCP = \"seed\"\n" {
 		t.Errorf("KG(profile show gcp --raw) = %q, want seeded var", out)
 	}
 }
@@ -1496,8 +1496,8 @@ func TestRunProfileAddEditorUnset(t *testing.T) {
 	code, errOut := captureStream(t, &os.Stderr, func() int {
 		return KG([]string{"profile", "add", "gcp", "-e"})
 	})
-	if code != 1 {
-		t.Errorf("KG(profile add gcp -e) = %d, want 1 ($EDITOR unset)", code)
+	if code != 2 {
+		t.Errorf("KG(profile add gcp -e) = %d, want 2 (usage error: $EDITOR unset)", code)
 	}
 	if !strings.Contains(errOut, "EDITOR") {
 		t.Errorf("KG(profile add gcp -e) stderr = %q, want $EDITOR guidance", errOut)
@@ -1514,8 +1514,8 @@ func TestRunProfileAddEditorFails(t *testing.T) {
 	code, errOut := captureStream(t, &os.Stderr, func() int {
 		return KG([]string{"profile", "add", "gcp", "-e"})
 	})
-	if code != 1 {
-		t.Errorf("KG(profile add gcp -e) = %d, want 1 (editor failure)", code)
+	if code != 2 {
+		t.Errorf("KG(profile add gcp -e) = %d, want 2 (usage error: editor failure)", code)
 	}
 	if !strings.Contains(errOut, "failed") {
 		t.Errorf("KG(profile add gcp -e) stderr = %q, want editor-failure message", errOut)
@@ -1542,7 +1542,7 @@ func TestRunProfileSetUpdatesVars(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
 	}
-	want := "AWS_REGION = \"us-west-2\"\nFOO = \"bar\"\n"
+	want := "[profiles.aws]\nAWS_REGION = \"us-west-2\"\nFOO = \"bar\"\n"
 	if out != want {
 		t.Errorf("KG(profile show aws --raw) = %q, want %q", out, want)
 	}
@@ -1568,7 +1568,7 @@ B2 = "1"
 	if code != 0 {
 		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
 	}
-	if out != "extends = base1\nA = \"1\"\n" {
+	if out != "[profiles.aws]\nextends = [\"base1\"]\nA = \"1\"\n" {
 		t.Errorf("KG(profile show aws --raw) = %q, want single base", out)
 	}
 	// A comma-separated list sets multiple bases.
@@ -1581,7 +1581,7 @@ B2 = "1"
 	if code != 0 {
 		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
 	}
-	if out != "extends = base1, base2\nA = \"1\"\n" {
+	if out != "[profiles.aws]\nextends = [\"base1\", \"base2\"]\nA = \"1\"\n" {
 		t.Errorf("KG(profile show aws --raw) = %q, want two bases", out)
 	}
 	// An empty value clears the bases.
@@ -1594,7 +1594,7 @@ B2 = "1"
 	if code != 0 {
 		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
 	}
-	if out != "A = \"1\"\n" {
+	if out != "[profiles.aws]\nA = \"1\"\n" {
 		t.Errorf("KG(profile show aws --raw) = %q, want bases cleared", out)
 	}
 }
@@ -1634,7 +1634,7 @@ func TestRunProfileUnset(t *testing.T) {
 	if code != 0 {
 		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
 	}
-	if out != "B = \"2\"\n" {
+	if out != "[profiles.aws]\nB = \"2\"\n" {
 		t.Errorf("KG(profile show aws --raw) = %q, want A removed", out)
 	}
 }

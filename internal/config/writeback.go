@@ -388,8 +388,10 @@ type profileBlock struct{ start, end int }
 // locateProfileBlock finds the exact [profiles.<name>] header on its own line
 // in raw and returns that profile's block extent. ok is false when no such
 // header exists. Any [ ... ] header line (table or array-of-tables) ends the
-// block. This is the reusable primitive for all surgical edits: replace
-// (WriteProfile), insert, remove, and rename build on it.
+// block — except a line inside a TOML multiline string literal, which is a
+// continuation of a value and never a header. This is the reusable primitive
+// for all surgical edits: replace (WriteProfile), insert, remove, and rename
+// build on it.
 func locateProfileBlock(raw []byte, name string) (profileBlock, bool) {
 	header := "[profiles." + name + "]"
 	start, ok := findHeaderLine(raw, header)
@@ -408,16 +410,22 @@ func locateProfileBlock(raw []byte, name string) (profileBlock, bool) {
 	pos++
 	end = pos // include the header line's newline
 
+	// Track TOML multiline-string state across lines: a line inside a """ or
+	// ''' literal is part of a value, so a line starting with `[` there is not
+	// the next table header.
+	inMulti := false
+	multiTyp := byte(0)
 	for {
 		lineEnd := pos
 		for lineEnd < len(raw) && raw[lineEnd] != '\n' {
 			lineEnd++
 		}
-		line := strings.TrimSpace(string(raw[pos:lineEnd]))
-		if strings.HasPrefix(line, "[") {
+		line := string(raw[pos:lineEnd])
+		trimmed := strings.TrimSpace(line)
+		if !inMulti && strings.HasPrefix(trimmed, "[") {
 			break // next table header starts the following block
 		}
-		if line != "" && !strings.HasPrefix(line, "#") {
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			// A variable key line extends the block through its end. Comments
 			// and blank lines do not: after the last key they are the gap.
 			if lineEnd < len(raw) {
@@ -426,6 +434,7 @@ func locateProfileBlock(raw []byte, name string) (profileBlock, bool) {
 				end = lineEnd
 			}
 		}
+		inMulti, multiTyp = multilineAfter(line, inMulti, multiTyp)
 		if lineEnd >= len(raw) {
 			break
 		}
@@ -435,22 +444,108 @@ func locateProfileBlock(raw []byte, name string) (profileBlock, bool) {
 }
 
 // findHeaderLine returns the byte offset of the start of the first line whose
-// trimmed content equals header, or ok=false if there is none.
+// trimmed content equals header, or ok=false if there is none. A line inside a
+// TOML multiline string literal is a continuation, never a header, so a string
+// value that happens to contain header text is skipped.
 func findHeaderLine(raw []byte, header string) (int, bool) {
+	inMulti := false
+	multiTyp := byte(0)
 	for pos := 0; pos <= len(raw); {
 		lineEnd := pos
 		for lineEnd < len(raw) && raw[lineEnd] != '\n' {
 			lineEnd++
 		}
-		if strings.TrimSpace(string(raw[pos:lineEnd])) == header {
+		if !inMulti && strings.TrimSpace(string(raw[pos:lineEnd])) == header {
 			return pos, true
 		}
+		inMulti, multiTyp = multilineAfter(string(raw[pos:lineEnd]), inMulti, multiTyp)
 		if lineEnd >= len(raw) {
 			break
 		}
 		pos = lineEnd + 1
 	}
 	return 0, false
+}
+
+// multilineAfter advances the TOML multiline-string state across a single line
+// and returns the state at the end of the line. inMulti is true when the line
+// begins inside a multiline string opened on an earlier line; multiTyp is the
+// string's delimiter, a double quote for basic triple-quoted strings and a
+// single quote for literal ones. A caller scanning line by line can use it to
+// tell whether a line is a continuation of a string literal (and therefore
+// never a table header). Single-line strings always close on their own line in
+// valid TOML, so each line starts outside them.
+func multilineAfter(line string, inMulti bool, multiTyp byte) (bool, byte) {
+	inBasic := false
+	inLiteral := false
+	i := 0
+	for i < len(line) {
+		c := line[i]
+		switch {
+		case inMulti:
+			if c == '\\' && multiTyp == '"' {
+				i += 2 // a backslash escapes the next char in a basic multiline string
+				continue
+			}
+			delim := `"""`
+			if multiTyp == '\'' {
+				delim = `'''`
+			}
+			if strings.HasPrefix(line[i:], delim) {
+				inMulti = false
+				i += len(delim)
+				continue
+			}
+			i++
+		case inBasic:
+			if c == '\\' {
+				i += 2
+				continue
+			}
+			if c == '"' {
+				if strings.HasPrefix(line[i:], `"""`) {
+					inMulti = true
+					multiTyp = '"'
+					i += 3
+					continue
+				}
+				inBasic = false
+			}
+			i++
+		case inLiteral:
+			if c == '\'' {
+				if strings.HasPrefix(line[i:], `'''`) {
+					inMulti = true
+					multiTyp = '\''
+					i += 3
+					continue
+				}
+				inLiteral = false
+			}
+			i++
+		default:
+			switch c {
+			case '"':
+				if strings.HasPrefix(line[i:], `"""`) {
+					inMulti = true
+					multiTyp = '"'
+					i += 3
+					continue
+				}
+				inBasic = true
+			case '\'':
+				if strings.HasPrefix(line[i:], `'''`) {
+					inMulti = true
+					multiTyp = '\''
+					i += 3
+					continue
+				}
+				inLiteral = true
+			}
+			i++
+		}
+	}
+	return inMulti, multiTyp
 }
 
 // renderProfileBlock renders a profile's [profiles.<name>] block

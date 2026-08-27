@@ -1057,3 +1057,95 @@ func TestRenameProfileRejectionLeavesFileUntouched(t *testing.T) {
 		t.Errorf("config dir after rejected rename has %d entries, want only config.toml", len(entries))
 	}
 }
+
+// TestWriteProfileMultilineStringWithHeaderLine pins that locateProfileBlock is
+// TOML-string-aware: a line starting with `[` inside a multiline string value
+// is a continuation, not the next table header, so a surgical write replaces
+// the whole block (bytes outside preserved) and the file re-parses.
+func TestWriteProfileMultilineStringWithHeaderLine(t *testing.T) {
+	src := `# keep me
+
+[profiles.a]
+GREETING = """
+hello
+[not-a-header]
+world
+"""
+A = "1"
+
+[profiles.b]
+B = "2"
+
+# trailing
+`
+	path := writeTempConfig(t, src)
+
+	p := Profile{
+		Vars: map[string]string{
+			"GREETING": "hello\n[not-a-header]\nworld\n",
+			"A":        "2",
+		},
+	}
+	if err := WriteProfile(path, "a", p); err != nil {
+		t.Fatalf("WriteProfile() error = %v", err)
+	}
+
+	// Only the [profiles.a] block is regenerated; the top comment, the gap, the
+	// b profile, and the trailing comment are byte-identical.
+	want := `# keep me
+
+[profiles.a]
+A = "2"
+GREETING = "hello\n[not-a-header]\nworld\n"
+
+[profiles.b]
+B = "2"
+
+# trailing
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("written config:\n%s\nwant:\n%s", got, want)
+	}
+	if _, err := Parse(readFile(t, path)); err != nil {
+		t.Errorf("written config does not re-parse: %v", err)
+	}
+}
+
+// TestWriteProfileHeaderTextInsideMultilineString pins that findHeaderLine is
+// TOML-string-aware too: a [profiles.<name>] line inside a multiline string is
+// not the profile's header, so editing the real block that follows leaves the
+// string-containing profile untouched.
+func TestWriteProfileHeaderTextInsideMultilineString(t *testing.T) {
+	src := `[profiles.a]
+GREETING = """
+[profiles.b]
+"""
+A = "1"
+
+[profiles.b]
+B = "2"
+`
+	path := writeTempConfig(t, src)
+
+	// Editing b must locate b's real header, not the one inside a's string.
+	p := Profile{Vars: map[string]string{"B": "3"}}
+	if err := WriteProfile(path, "b", p); err != nil {
+		t.Fatalf("WriteProfile() error = %v", err)
+	}
+
+	want := `[profiles.a]
+GREETING = """
+[profiles.b]
+"""
+A = "1"
+
+[profiles.b]
+B = "3"
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("written config:\n%s\nwant:\n%s", got, want)
+	}
+	if _, err := Parse(readFile(t, path)); err != nil {
+		t.Errorf("written config does not re-parse: %v", err)
+	}
+}
