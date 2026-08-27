@@ -54,6 +54,70 @@ func WriteProfile(path, name string, p Profile) error {
 	return atomicWrite(path, out)
 }
 
+// AddProfile inserts a new [profiles.<name>] block into the config file at
+// path, appending it at the end of the file and leaving every existing byte
+// byte-identical. The block is rendered deterministically exactly like
+// WriteProfile renders a block, and the candidate state is validated against
+// the resolution rules before anything is written (same whole-config
+// validation as WriteProfile) — a violation rejects the insert with the file
+// untouched (fail-fast, ADR-0012).
+//
+// The written file always re-parses. name must not already exist in the file:
+// AddProfile inserts; replacement is WriteProfile's job.
+func AddProfile(path, name string, p Profile) error {
+	// The name is validated up front (beyond the existing-config checks
+	// validateCandidate runs): a name outside the charset would render a header
+	// that TOML parses as nested tables, silently corrupting the profile name.
+	if !validName(name) {
+		return fmt.Errorf("profile %q: name contains a character outside %s", name, nameCharset)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := locateProfileBlock(raw, name); ok {
+		return fmt.Errorf("profile %q already exists in %s", name, path)
+	}
+
+	if err := validateCandidate(raw, name, p); err != nil {
+		return err
+	}
+
+	rendered := renderProfileBlock(name, p)
+	out := appendProfileBlock(raw, rendered)
+
+	// Belt-and-braces over the deterministic render: the bytes about to be
+	// written must re-parse. Reject without writing if they would not.
+	if _, err := Parse(out); err != nil {
+		return err
+	}
+
+	return atomicWrite(path, out)
+}
+
+// appendProfileBlock appends a rendered profile block to raw so the block
+// starts on its own line, separated from the existing content by a blank line.
+// An empty raw is returned as the block alone.
+func appendProfileBlock(raw []byte, rendered string) []byte {
+	out := make([]byte, 0, len(raw)+len(rendered)+2)
+	out = append(out, raw...)
+	switch {
+	case len(raw) == 0:
+	case raw[len(raw)-1] != '\n':
+		out = append(out, '\n', '\n')
+	case len(raw) < 2 || raw[len(raw)-2] != '\n':
+		out = append(out, '\n')
+	}
+	return append(out, rendered...)
+}
+
+// RenderProfileBlock renders a profile's [profiles.<name>] block exactly as the
+// write-back engine renders it. Exported for the CLI's editor flow (kg profile
+// add -e), which shows the seeded block in $EDITOR before it is written.
+func RenderProfileBlock(name string, p Profile) string {
+	return renderProfileBlock(name, p)
+}
+
 // validateCandidate builds the config the file would contain after the edit
 // and validates every profile in it under the same rules kg run applies. The
 // edited profile's new state is swapped in; validating only it would miss

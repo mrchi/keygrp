@@ -691,9 +691,9 @@ func parseSecret(cmd command, rest []string) (command, error) {
 // parseProfile parses `kg profile <op> ...` (ADR-0012), mirroring parseSecret:
 // a bare invocation lists the ops, a leading -h/--help resolves verb help, and
 // op-level help is resolved before any op state — so `kg profile bogus --help`
-// stays an unknown-op error (ADR-0008). list and show are fully parsed; the
-// mutation ops are recognized but stash their remaining args verbatim, with
-// their full parse/validation landing in tickets 04/05/06.
+// stays an unknown-op error (ADR-0008). list, show, add, set, and unset are
+// fully parsed; delete and rename are recognized but stash their remaining args
+// verbatim, with their full parse/validation landing in tickets 05/06.
 func parseProfile(cmd command, rest []string) (command, error) {
 	if len(rest) == 0 {
 		return cmd, fmt.Errorf("usage: kg profile {list|show|add|set|unset|delete|rename}")
@@ -746,8 +746,59 @@ func parseProfile(cmd command, rest []string) (command, error) {
 		if cmd.profileName == "" {
 			return cmd, fmt.Errorf("usage: kg profile show <name> [--raw] [--json]")
 		}
-	case opAdd, opSet, opUnset, opDelete, opRename:
-		// Full parse and validation land in tickets 04/05/06; keep the remaining
+	case opAdd:
+		for _, a := range rest {
+			switch {
+			case a == "-e":
+				cmd.edit = true
+			case strings.HasPrefix(a, "-"):
+				// A name (or anything) with a leading dash reads as a flag and is
+				// rejected here, mirroring parseSecret (ADR-0012): names never
+				// start with "-" at the argv layer.
+				return cmd, fmt.Errorf("unknown flag %q for profile add", a)
+			case cmd.profileName == "":
+				cmd.profileName = a
+			case strings.Contains(a, "="):
+				cmd.vars = append(cmd.vars, a)
+			default:
+				return cmd, fmt.Errorf("usage: kg profile add <name> [KEY=value...] [-e]")
+			}
+		}
+		if cmd.profileName == "" {
+			return cmd, fmt.Errorf("usage: kg profile add <name> [KEY=value...] [-e]")
+		}
+	case opSet:
+		for _, a := range rest {
+			switch {
+			case strings.HasPrefix(a, "-"):
+				return cmd, fmt.Errorf("unknown flag %q for profile set", a)
+			case cmd.profileName == "":
+				cmd.profileName = a
+			case strings.Contains(a, "="):
+				cmd.vars = append(cmd.vars, a)
+			default:
+				return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value...")
+			}
+		}
+		if cmd.profileName == "" || len(cmd.vars) == 0 {
+			return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value...")
+		}
+	case opUnset:
+		for _, a := range rest {
+			switch {
+			case strings.HasPrefix(a, "-"):
+				return cmd, fmt.Errorf("unknown flag %q for profile unset", a)
+			case cmd.profileName == "":
+				cmd.profileName = a
+			default:
+				cmd.vars = append(cmd.vars, a)
+			}
+		}
+		if cmd.profileName == "" || len(cmd.vars) == 0 {
+			return cmd, fmt.Errorf("usage: kg profile unset <name> KEY...")
+		}
+	case opDelete, opRename:
+		// Full parse and validation land in tickets 05/06; keep the remaining
 		// tokens verbatim so those tickets have the raw argv to work from.
 		cmd.args = rest
 	default:
@@ -785,12 +836,15 @@ func runProfile(cmd command) int {
 }
 
 // runProfileCmd implements the `kg profile` verb (ADR-0012). list and show are
-// the read path; the mutation ops (add|set|unset|delete|rename) are stubbed
-// here — exit 2, deterministically — until tickets 04/05/06 replace them.
+// the read path; add, set, and unset are the mutations (ticket 04); delete and
+// rename are still stubbed here — exit 2, deterministically — until tickets
+// 05/06 replace them.
 func runProfileCmd(cmd command) int {
 	switch cmd.profileOp {
 	case opList, opShow:
 		// read path below
+	case opAdd, opSet, opUnset:
+		return runProfileMutation(cmd)
 	default:
 		return fail(2, "profile %s is not yet implemented", cmd.profileOp)
 	}
@@ -806,6 +860,163 @@ func runProfileCmd(cmd command) int {
 	default:
 		return runProfileShow(cmd, cfg, path)
 	}
+}
+
+// runProfileMutation implements the profile mutations (add|set|unset): it loads
+// the config, builds the candidate profile from the parsed args, and writes it
+// through the surgical engine — which validates the whole candidate state
+// before any write, so a no-shadowing conflict, extends cycle, or unknown base
+// rejects the mutation with the file untouched (fail-fast, ADR-0012).
+// keychain://<ref> values are written and removed as plain strings, never
+// resolved or verified.
+func runProfileMutation(cmd command) int {
+	path := configPath()
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	warnPermissive(path)
+
+	switch cmd.profileOp {
+	case opAdd:
+		if _, ok := cfg.Profiles[cmd.profileName]; ok {
+			return fail(1, "profile %q already exists in %s", cmd.profileName, path)
+		}
+		p := config.Profile{Vars: map[string]string{}}
+		for _, kv := range cmd.vars {
+			k, v, _ := strings.Cut(kv, "=")
+			p.Vars[k] = v
+		}
+		if cmd.edit {
+			return addWithEditor(path, cmd.profileName, p)
+		}
+		if err := config.AddProfile(path, cmd.profileName, p); err != nil {
+			return fail(1, "%v", err)
+		}
+		fmt.Printf("profile %q added\n", cmd.profileName)
+		return 0
+	case opSet:
+		p, ok := cfg.Profiles[cmd.profileName]
+		if !ok {
+			return fail(1, "profile %q not found in %s", cmd.profileName, path)
+		}
+		vars := map[string]string{}
+		for k, v := range p.Vars {
+			vars[k] = v
+		}
+		extends := append([]string(nil), p.Extends...)
+		for _, kv := range cmd.vars {
+			k, v, _ := strings.Cut(kv, "=")
+			if k == "extends" {
+				// extends is managed here, never as a variable: the value is the
+				// full comma-separated base list; an empty value clears the bases.
+				extends = parseExtendsArg(v)
+				continue
+			}
+			vars[k] = v
+		}
+		if err := config.WriteProfile(path, cmd.profileName, config.Profile{Extends: extends, Vars: vars}); err != nil {
+			return fail(1, "%v", err)
+		}
+		fmt.Printf("profile %q updated\n", cmd.profileName)
+		return 0
+	case opUnset:
+		p, ok := cfg.Profiles[cmd.profileName]
+		if !ok {
+			return fail(1, "profile %q not found in %s", cmd.profileName, path)
+		}
+		vars := map[string]string{}
+		for k, v := range p.Vars {
+			vars[k] = v
+		}
+		for _, key := range cmd.vars {
+			if _, present := vars[key]; !present {
+				return fail(1, "profile %q has no variable %q", cmd.profileName, key)
+			}
+			delete(vars, key)
+		}
+		if err := config.WriteProfile(path, cmd.profileName, config.Profile{Extends: append([]string(nil), p.Extends...), Vars: vars}); err != nil {
+			return fail(1, "%v", err)
+		}
+		fmt.Printf("profile %q updated\n", cmd.profileName)
+		return 0
+	}
+	return 2
+}
+
+// parseExtendsArg splits a comma-separated extends value into base profile
+// names, dropping empty elements; an empty value clears the profile's bases.
+func parseExtendsArg(v string) []string {
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// addWithEditor implements `kg profile add <name> [KEY=value...] -e`: the
+// seeded profile's raw block is rendered exactly as the engine renders it and
+// written to a temp file, $EDITOR is opened on it with stdio inherited, and the
+// edited result is re-parsed and written through the engine, which revalidates
+// the whole candidate state. $EDITOR must be set; an editor failure or an
+// invalid edit aborts with a kg: error and the config is never touched.
+func addWithEditor(path, name string, p config.Profile) int {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		return fail(1, "$EDITOR is not set; set $EDITOR to edit the new profile, or drop -e")
+	}
+	tmp, err := os.CreateTemp("", "kg-profile-*.toml")
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write([]byte(config.RenderProfileBlock(name, p))); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fail(1, "%v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fail(1, "%v", err)
+	}
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	cmd := exec.Command(editor, tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fail(1, "$EDITOR (%s) failed: %v", editor, err)
+	}
+
+	edited, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	cfg, err := config.Parse(edited)
+	if err != nil {
+		return fail(1, "edited profile is invalid: %v", err)
+	}
+	p2, ok := cfg.Profiles[name]
+	if !ok {
+		return fail(1, "edited profile %q no longer exists", name)
+	}
+	for other := range cfg.Profiles {
+		if other != name {
+			return fail(1, "edited file defines profile %q; edit only %q's block", other, name)
+		}
+	}
+	if err := config.AddProfile(path, name, p2); err != nil {
+		return fail(1, "%v", err)
+	}
+	fmt.Printf("profile %q added\n", name)
+	return 0
 }
 
 // runProfileList implements `kg profile list`: profile names in sorted order,
