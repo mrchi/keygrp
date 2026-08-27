@@ -238,25 +238,31 @@ func bracketBalance(s string) int {
 	inLiteral := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		switch {
-		case inBasic:
-			if c == '\\' {
-				i++
-			} else if c == '"' {
+		switch c {
+		case '"':
+			if inBasic {
 				inBasic = false
+			} else if !inLiteral {
+				inBasic = true
 			}
-		case inLiteral:
-			if c == '\'' {
+		case '\'':
+			if inLiteral {
 				inLiteral = false
+			} else if !inBasic {
+				inLiteral = true
 			}
-		case c == '"':
-			inBasic = true
-		case c == '\'':
-			inLiteral = true
-		case c == '[':
-			balance++
-		case c == ']':
-			balance--
+		case '\\':
+			if inBasic {
+				i++
+			}
+		case '[':
+			if !inBasic && !inLiteral {
+				balance++
+			}
+		case ']':
+			if !inBasic && !inLiteral {
+				balance--
+			}
 		}
 	}
 	return balance
@@ -588,8 +594,7 @@ func renderProfileBlock(name string, p Profile) string {
 // quoted otherwise, so any variable name round-trips through Parse.
 func tomlKey(k string) string {
 	for i := 0; i < len(k); i++ {
-		c := k[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		if !isNameChar(k[i]) {
 			return tomlQuote(k)
 		}
 	}

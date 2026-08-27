@@ -777,11 +777,11 @@ func parseProfile(cmd command, rest []string) (command, error) {
 			case strings.Contains(a, "="):
 				cmd.vars = append(cmd.vars, a)
 			default:
-				return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value...")
+				return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value [KEY=value...]")
 			}
 		}
 		if cmd.profileName == "" || len(cmd.vars) == 0 {
-			return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value...")
+			return cmd, fmt.Errorf("usage: kg profile set <name> KEY=value [KEY=value...]")
 		}
 	case opUnset:
 		for _, a := range rest {
@@ -795,7 +795,7 @@ func parseProfile(cmd command, rest []string) (command, error) {
 			}
 		}
 		if cmd.profileName == "" || len(cmd.vars) == 0 {
-			return cmd, fmt.Errorf("usage: kg profile unset <name> KEY...")
+			return cmd, fmt.Errorf("usage: kg profile unset <name> KEY [KEY...]")
 		}
 	case opDelete:
 		for _, a := range rest {

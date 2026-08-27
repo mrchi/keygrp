@@ -125,6 +125,18 @@ const extendsKey = "extends"
 // fine and is rejected later by the argv layer, where it would read as a flag.
 const nameCharset = "[A-Za-z0-9_-]"
 
+// isNameChar reports whether c is allowed in a profile name, a ref name, or a
+// bare TOML key: [A-Za-z0-9_-].
+func isNameChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '_' || c == '-':
+		return true
+	}
+	return false
+}
+
 // validName reports whether s is a non-empty name made only of nameCharset
 // characters.
 func validName(s string) bool {
@@ -132,8 +144,7 @@ func validName(s string) bool {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		if !isNameChar(s[i]) {
 			return false
 		}
 	}
