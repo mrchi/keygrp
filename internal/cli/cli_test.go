@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mrchi/keygrp/internal/archive"
+	"github.com/mrchi/keygrp/internal/config"
 	"github.com/mrchi/keygrp/internal/exportimport"
 	"github.com/mrchi/keygrp/internal/keychain"
 )
@@ -60,6 +61,25 @@ func TestParseKG(t *testing.T) {
 		{[]string{"secret", "import", "-"}, command{kind: "secret", secretOp: "import", secretFile: "-"}},
 		{[]string{"secret", "import", "--skip-existing", "backup.kgx"}, command{kind: "secret", secretOp: "import", skipExisting: true, secretFile: "backup.kgx"}},
 		{[]string{"secret", "import", "backup.kgx", "--skip-existing"}, command{kind: "secret", secretOp: "import", skipExisting: true, secretFile: "backup.kgx"}},
+		{[]string{"profile", "list"}, command{kind: "profile", profileOp: "list"}},
+		{[]string{"profile", "list", "--json"}, command{kind: "profile", profileOp: "list", jsonOut: true}},
+		{[]string{"profile", "show", "aws"}, command{kind: "profile", profileOp: "show", profileName: "aws"}},
+		{[]string{"profile", "show", "aws", "--raw"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true}},
+		{[]string{"profile", "show", "--json", "aws"}, command{kind: "profile", profileOp: "show", profileName: "aws", jsonOut: true}},
+		{[]string{"profile", "show", "aws", "--raw", "--json"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true, jsonOut: true}},
+		// Every profile op is fully parsed.
+		{[]string{"profile", "add", "aws"}, command{kind: "profile", profileOp: "add", profileName: "aws"}},
+		{[]string{"profile", "add", "aws", "A=1"}, command{kind: "profile", profileOp: "add", profileName: "aws", vars: []string{"A=1"}}},
+		{[]string{"profile", "add", "aws", "A=1", "B=2"}, command{kind: "profile", profileOp: "add", profileName: "aws", vars: []string{"A=1", "B=2"}}},
+		{[]string{"profile", "add", "-e", "aws", "A=1"}, command{kind: "profile", profileOp: "add", profileName: "aws", vars: []string{"A=1"}, edit: true}},
+		{[]string{"profile", "add", "aws", "-e"}, command{kind: "profile", profileOp: "add", profileName: "aws", edit: true}},
+		{[]string{"profile", "set", "aws", "A=1", "extends=b"}, command{kind: "profile", profileOp: "set", profileName: "aws", vars: []string{"A=1", "extends=b"}}},
+		{[]string{"profile", "unset", "aws", "A"}, command{kind: "profile", profileOp: "unset", profileName: "aws", vars: []string{"A"}}},
+		{[]string{"profile", "unset", "aws", "A", "B"}, command{kind: "profile", profileOp: "unset", profileName: "aws", vars: []string{"A", "B"}}},
+		{[]string{"profile", "delete", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws"}},
+		{[]string{"profile", "delete", "--force", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
+		{[]string{"profile", "delete", "aws", "--force"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
+		{[]string{"profile", "rename", "a", "b"}, command{kind: "profile", profileOp: "rename", profileName: "a", profileNewName: "b"}},
 		{[]string{"check"}, command{kind: "check"}},
 		{[]string{"check", "--profile", "aws"}, command{kind: "check", checkTargets: []string{"aws"}}},
 		{[]string{"check", "--profile", "aws,gcp"}, command{kind: "check", checkTargets: []string{"aws", "gcp"}}},
@@ -84,6 +104,18 @@ func TestParseKG(t *testing.T) {
 		{[]string{"secret", "list", "--help"}, command{kind: "help", help: secretListHelpText}},
 		{[]string{"secret", "export", "--help"}, command{kind: "help", help: secretExportHelpText}},
 		{[]string{"secret", "import", "--help"}, command{kind: "help", help: secretImportHelpText}},
+		{[]string{"profile", "--help"}, command{kind: "help", help: profileHelpText}},
+		{[]string{"profile", "-h"}, command{kind: "help", help: profileHelpText}},
+		{[]string{"profile", "list", "--help"}, command{kind: "help", help: profileListHelpText}},
+		{[]string{"profile", "show", "-h"}, command{kind: "help", help: profileShowHelpText}},
+		{[]string{"profile", "add", "--help"}, command{kind: "help", help: profileAddHelpText}},
+		{[]string{"profile", "set", "--help"}, command{kind: "help", help: profileSetHelpText}},
+		{[]string{"profile", "unset", "--help"}, command{kind: "help", help: profileUnsetHelpText}},
+		{[]string{"profile", "delete", "--help"}, command{kind: "help", help: profileDeleteHelpText}},
+		{[]string{"profile", "rename", "--help"}, command{kind: "help", help: profileRenameHelpText}},
+		// a profile literally named `profile` stays reachable via kg run
+		// (ADR-0007): the first token is verb-only, so this is run, not the verb.
+		{[]string{"run", "profile", "terraform"}, command{kind: "run", profiles: []string{"profile"}, program: "terraform", args: []string{}}},
 		{[]string{"check", "--help"}, command{kind: "help", help: checkHelpText}},
 		{[]string{"check", "-h"}, command{kind: "help", help: checkHelpText}},
 		{[]string{"init", "--help"}, command{kind: "help", help: initHelpText}},
@@ -207,6 +239,14 @@ func TestVerbHelpExitsZero(t *testing.T) {
 		{"secret", "list", "--help"}, {"secret", "list", "-h"},
 		{"secret", "export", "--help"}, {"secret", "export", "-h"},
 		{"secret", "import", "--help"}, {"secret", "import", "-h"},
+		{"profile", "--help"}, {"profile", "-h"},
+		{"profile", "list", "--help"}, {"profile", "list", "-h"},
+		{"profile", "show", "--help"}, {"profile", "show", "-h"},
+		{"profile", "add", "--help"}, {"profile", "add", "-h"},
+		{"profile", "set", "--help"}, {"profile", "set", "-h"},
+		{"profile", "unset", "--help"}, {"profile", "unset", "-h"},
+		{"profile", "delete", "--help"}, {"profile", "delete", "-h"},
+		{"profile", "rename", "--help"}, {"profile", "rename", "-h"},
 		{"check", "--help"}, {"check", "-h"},
 		{"init", "--help"}, {"init", "-h"},
 		{"completion", "--help"}, {"completion", "-h"},
@@ -295,6 +335,41 @@ func TestParseKGErrors(t *testing.T) {
 		{"secret", "import", "--skip-existing", "a", "b"}, // still at most one file
 		{"secret", "set", "--skip-existing", "x"},         // --skip-existing only for import
 		{"secret", "export", "--skip-existing"},           // --skip-existing only for import
+		{"profile"},                                       // profile needs an op
+		{"profile", "bogus"},                              // unknown op
+		{"profile", "bogus", "--help"},                    // help only resolves under a real op
+		{"profile", "list", "x"},                          // list takes no positional
+		{"profile", "list", "--bogus"},                    // unknown flag
+		{"profile", "show"},                               // show needs a name
+		{"profile", "show", "a", "b"},                     // show takes one name
+		{"profile", "show", "--bogus"},                    // unknown flag
+		{"profile", "show", "a", "--bogus"},               // unknown flag
+		{"profile", "delete"},                             // delete needs a name
+		{"profile", "delete", "--force"},                  // --force still needs a name
+		{"profile", "delete", "a", "b"},                   // delete takes one name
+		{"profile", "delete", "--bogus"},                  // unknown flag
+		{"profile", "delete", "a", "--bogus"},             // unknown flag
+		{"profile", "list", "--force"},                    // --force is delete-only
+		{"profile", "add"},                                // add needs a name
+		{"profile", "add", "-aws", "A=1"},                 // leading dash name reads as a flag
+		{"profile", "add", "aws", "--bogus"},              // unknown flag
+		{"profile", "add", "aws", "BOGUS"},                // positional after name must be KEY=value
+		{"profile", "add", "-e"},                          // -e with no name
+		{"profile", "set"},                                // set needs a name
+		{"profile", "set", "aws"},                         // set needs at least one KEY=value
+		{"profile", "set", "-aws", "A=1"},                 // leading dash name reads as a flag
+		{"profile", "set", "aws", "--bogus"},              // unknown flag
+		{"profile", "set", "aws", "BOGUS"},                // positional must be KEY=value
+		{"profile", "unset"},                              // unset needs a name
+		{"profile", "unset", "aws"},                       // unset needs at least one KEY
+		{"profile", "unset", "-aws", "A"},                 // leading dash name reads as a flag
+		{"profile", "unset", "aws", "--bogus"},            // unknown flag
+		{"profile", "rename"},                             // rename needs old and new
+		{"profile", "rename", "a"},                        // rename needs new
+		{"profile", "rename", "a", "b", "c"},              // rename takes exactly two
+		{"profile", "rename", "-a", "b"},                  // leading dash old reads as a flag
+		{"profile", "rename", "a", "-b"},                  // leading dash new reads as a flag
+		{"profile", "rename", "a", "--bogus"},             // unknown flag
 	}
 	for _, args := range cases {
 		if _, err := parseKG(args); err == nil {
@@ -350,6 +425,28 @@ func writeConfig(t *testing.T, content string) {
 		t.Fatal(err)
 	}
 	t.Setenv("KEYGRP_CONFIG", path)
+}
+
+// writeProfileConfig writes a config to a temp file, points $KEYGRP_CONFIG at
+// it, and returns the path so a test can assert the file's exact bytes after a
+// mutation.
+func writeProfileConfig(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KEYGRP_CONFIG", path)
+	return path
+}
+
+func readConfigBytes(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestRunCheckConflictIsConfigError(t *testing.T) {
@@ -570,5 +667,1116 @@ C_ONLY = "c"
 `)
 	if code := KG([]string{"check", "--profile", "b,c"}); code != 0 {
 		t.Errorf("KG(check --profile b,c) = %d, want 0 (shared base)", code)
+	}
+}
+
+// captureStream runs fn with the given stream (os.Stdout/os.Stderr) redirected
+// to a pipe, returning the exit code and the captured bytes.
+func captureStream(t *testing.T, stream **os.File, fn func() int) (int, string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := *stream
+	*stream = w
+	code := fn()
+	*stream = old
+	_ = w.Close()
+	out, _ := io.ReadAll(r)
+	return code, string(out)
+}
+
+// captureStdoutStderr runs fn with both os.Stdout and os.Stderr redirected,
+// returning the exit code and each stream's captured bytes.
+func captureStdoutStderr(t *testing.T, fn func() int) (code int, stdout, stderr string) {
+	t.Helper()
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = outW, errW
+	code = fn()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	_ = outW.Close()
+	_ = errW.Close()
+	out, _ := io.ReadAll(outR)
+	errOut, _ := io.ReadAll(errR)
+	return code, string(out), string(errOut)
+}
+
+// withStdin runs fn with os.Stdin redirected to a pipe carrying input. The pipe
+// is closed after the input is written, so an unread tail reads as EOF — the
+// same shape a non-terminal stdin reaches the confirm prompt with.
+func withStdin(t *testing.T, input string, fn func() int) int {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdin
+	os.Stdin = r
+	if _, err := w.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	defer func() { os.Stdin = old }()
+	return fn()
+}
+
+// profileFixture has a base profile (aws) and an extender (terraform) so the
+// read-path tests cover effective sets, origins, and declarations.
+const profileFixture = `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.terraform]
+extends = "aws"
+TF_TOKEN = "plaintext-token"
+`
+
+func TestRunProfileList(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "list"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile list) = %d, want 0", code)
+	}
+	want := "aws\nterraform\n"
+	if out != want {
+		t.Errorf("KG(profile list) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileListJSON(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "list", "--json"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile list --json) = %d, want 0", code)
+	}
+	want := `{
+  "profiles": [
+    "aws",
+    "terraform"
+  ]
+}
+`
+	if out != want {
+		t.Errorf("KG(profile list --json) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileShow(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "terraform"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show terraform) = %d, want 0", code)
+	}
+	want := "AWS_REGION=ap-southeast-1 (from aws)\nTF_TOKEN=plaintext-token (from terraform)\n"
+	if out != want {
+		t.Errorf("KG(profile show terraform) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileShowRaw(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "terraform", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show terraform --raw) = %d, want 0", code)
+	}
+	want := "[profiles.terraform]\nextends = [\"aws\"]\nTF_TOKEN = \"plaintext-token\"\n"
+	if out != want {
+		t.Errorf("KG(profile show terraform --raw) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileShowJSON(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "terraform", "--json"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show terraform --json) = %d, want 0", code)
+	}
+	want := `{
+  "name": "terraform",
+  "extends": [
+    "aws"
+  ],
+  "variables": {
+    "AWS_REGION": {
+      "value": "ap-southeast-1",
+      "origin": "aws"
+    },
+    "TF_TOKEN": {
+      "value": "plaintext-token",
+      "origin": "terraform"
+    }
+  }
+}
+`
+	if out != want {
+		t.Errorf("KG(profile show terraform --json) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileShowRawJSON(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "terraform", "--raw", "--json"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show terraform --raw --json) = %d, want 0", code)
+	}
+	// --raw --json is the declaration: only the profile's own vars, no origins.
+	want := `{
+  "name": "terraform",
+  "extends": [
+    "aws"
+  ],
+  "variables": {
+    "TF_TOKEN": {
+      "value": "plaintext-token"
+    }
+  }
+}
+`
+	if out != want {
+		t.Errorf("KG(profile show terraform --raw --json) stdout = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileShowUnknownIsConfigError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "show", "ghost"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile show ghost) = %d, want 1 (config error)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("KG(profile show ghost) stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, `profile "ghost" not found`) {
+		t.Errorf("KG(profile show ghost) stderr = %q, want not-found message", errOut)
+	}
+}
+
+func TestRunProfileShowBrokenExtendsIsConfigError(t *testing.T) {
+	writeConfig(t, `[profiles.a]
+extends = "ghost"
+`)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "show", "a"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile show a) = %d, want 1 (broken reachable set)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("KG(profile show a) stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+}
+
+func TestRunProfileBareIsUsageError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	if code := KG([]string{"profile"}); code != 2 {
+		t.Errorf("KG(profile) = %d, want 2 (usage error)", code)
+	}
+}
+
+func TestRunProfileUnknownOpIsUsageError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	if code := KG([]string{"profile", "bogus"}); code != 2 {
+		t.Errorf("KG(profile bogus) = %d, want 2 (usage error)", code)
+	}
+}
+
+// deleteFixture has a base (aws) and a retireable extender (retired) so the
+// delete tests cover both confirmed deletion and rejected base deletion.
+const deleteFixture = `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.retired]
+extends = "aws"
+OLD = "true"
+`
+
+// TestRunProfileDeleteConfirmed pins the confirmed path: delete asks a y/N
+// prompt on stderr, an explicit y/yes (case-insensitive) deletes the profile
+// through the engine, the file re-parses with the profile gone and every byte
+// outside the block unchanged, and stdout stays clean for programmatic use
+// (ADR-0013).
+func TestRunProfileDeleteConfirmed(t *testing.T) {
+	for _, input := range []string{"y\n", "yes\n", "Y\n", "YES\n"} {
+		t.Run(strings.TrimSpace(input), func(t *testing.T) {
+			path := writeProfileConfig(t, deleteFixture)
+			code, out, errOut := captureStdoutStderr(t, func() int {
+				return withStdin(t, input, func() int {
+					return KG([]string{"profile", "delete", "retired"})
+				})
+			})
+			if code != 0 {
+				t.Errorf("KG(profile delete retired) = %d, want 0", code)
+			}
+			if out != "" {
+				t.Errorf("stdout = %q, want empty (prompt goes to stderr, ADR-0013)", out)
+			}
+			if !strings.Contains(errOut, `delete profile "retired"? [y/N] `) {
+				t.Errorf("stderr = %q, want y/N prompt", errOut)
+			}
+			cfg, err := config.Parse(readConfigBytes(t, path))
+			if err != nil {
+				t.Fatalf("config after delete does not re-parse: %v", err)
+			}
+			if _, ok := cfg.Profiles["retired"]; ok {
+				t.Error("profile retired still present after delete")
+			}
+			if got, want := cfg.Profiles["aws"].Vars["AWS_REGION"], "ap-southeast-1"; got != want {
+				t.Errorf("aws touched: AWS_REGION = %q, want %q", got, want)
+			}
+			want := `# top comment
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+`
+			if got := string(readConfigBytes(t, path)); got != want {
+				t.Errorf("deleted config:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteAbortsLeaveFileUntouched pins that anything other than an
+// explicit y/yes — n, no, an empty line, or EOF — aborts the delete and leaves
+// the file byte-identical, exiting 0.
+func TestRunProfileDeleteAbortsLeaveFileUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"n", "n\n"},
+		{"no", "no\n"},
+		{"N", "N\n"},
+		{"empty line", "\n"},
+		{"EOF", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeProfileConfig(t, deleteFixture)
+			code, errOut := captureStream(t, &os.Stderr, func() int {
+				return withStdin(t, tc.input, func() int {
+					return KG([]string{"profile", "delete", "retired"})
+				})
+			})
+			if code != 0 {
+				t.Errorf("KG(profile delete retired) with %q = %d, want 0 (aborted)", tc.name, code)
+			}
+			if !strings.Contains(errOut, `delete profile "retired"? [y/N] `) {
+				t.Errorf("stderr = %q, want y/N prompt", errOut)
+			}
+			if got := string(readConfigBytes(t, path)); got != deleteFixture {
+				t.Errorf("file changed by aborted delete:\n%s\nwant:\n%s", got, deleteFixture)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteForce pins that --force deletes without reading stdin, so
+// an agent on a closed non-terminal stdin never blocks (ADR-0013): no prompt is
+// printed and the profile is removed.
+func TestRunProfileDeleteForce(t *testing.T) {
+	path := writeProfileConfig(t, deleteFixture)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return withStdin(t, "", func() int { // closed pipe: an agent's stdin
+			return KG([]string{"profile", "delete", "--force", "retired"})
+		})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile delete --force retired) = %d, want 0", code)
+	}
+	if strings.Contains(errOut, "y/N") {
+		t.Errorf("stderr = %q, want no prompt under --force", errOut)
+	}
+	cfg, err := config.Parse(readConfigBytes(t, path))
+	if err != nil {
+		t.Fatalf("config after delete does not re-parse: %v", err)
+	}
+	if _, ok := cfg.Profiles["retired"]; ok {
+		t.Error("profile retired still present after --force delete")
+	}
+}
+
+// TestRunProfileDeleteMissingIsConfigError pins that deleting a missing profile
+// is a config error (exit 1, kg:-prefixed), rejected before any prompt is read.
+func TestRunProfileDeleteMissingIsConfigError(t *testing.T) {
+	writeConfig(t, `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+`)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		input string
+	}{
+		{"default", []string{"profile", "delete", "ghost"}, "n\n"},
+		{"force", []string{"profile", "delete", "--force", "ghost"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, errOut := captureStream(t, &os.Stderr, func() int {
+				return withStdin(t, tc.input, func() int {
+					return KG(tc.args)
+				})
+			})
+			if code != 1 {
+				t.Errorf("KG(%v) = %d, want 1 (config error)", tc.args, code)
+			}
+			if !strings.HasPrefix(errOut, "kg: ") {
+				t.Errorf("KG(%v) stderr = %q, want kg: prefix (ADR-0013)", tc.args, errOut)
+			}
+			if !strings.Contains(errOut, `profile "ghost" not found`) {
+				t.Errorf("KG(%v) stderr = %q, want not-found message", tc.args, errOut)
+			}
+		})
+	}
+}
+
+// TestRunProfileDeleteDanglingBaseRejected pins reachability safety: deleting a
+// profile that another profile extends is rejected before any write (exit 1),
+// leaving the file byte-identical.
+func TestRunProfileDeleteDanglingBaseRejected(t *testing.T) {
+	path := writeProfileConfig(t, deleteFixture)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return withStdin(t, "", func() int {
+			return KG([]string{"profile", "delete", "--force", "aws"})
+		})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile delete --force aws) = %d, want 1 (dangling base)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, "unknown profile") {
+		t.Errorf("stderr = %q, want dangling-base message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != deleteFixture {
+		t.Errorf("file changed by rejected delete:\n%s\nwant:\n%s", got, deleteFixture)
+	}
+}
+
+// TestRunProfileDeleteUsageErrors pins the exit-2 surface for delete: malformed
+// invocations and flags that belong to another op fail with a usage error
+// (parse error, runFor dumps the entry usage to stderr).
+func TestRunProfileDeleteUsageErrors(t *testing.T) {
+	writeConfig(t, profileFixture)
+	for _, args := range [][]string{
+		{"profile", "delete"},                   // missing name
+		{"profile", "delete", "a", "b"},         // stray positional
+		{"profile", "delete", "aws", "--bogus"}, // unknown flag
+		{"profile", "list", "--force"},          // --force is delete-only
+	} {
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
+		}
+	}
+}
+
+// renameFixture has a base (old), two extenders (child with a single-form
+// extends, multi with an array-form extends), and an unrelated profile, so the
+// rename tests cover the reported count, both extends forms, and byte
+// preservation.
+const renameFixture = `# top comment
+
+[profiles.old]
+A = "1"
+
+[profiles.child]
+extends = "old"
+C = "1"
+
+[profiles.multi]
+extends = ["old", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.unrelated]
+extends = "base"
+U = "1"
+
+# trailing comment
+`
+
+// TestRunProfileRename pins the rename end-to-end: the block is renamed, both
+// single- and array-form extends references are rewritten, the count is
+// reported on stdout, the file re-parses with the profile under the new name
+// and gone under the old, and bytes outside the renamed header and the edited
+// extends lines are byte-identical.
+func TestRunProfileRename(t *testing.T) {
+	path := writeProfileConfig(t, renameFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "rename", "old", "renamed"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile rename old renamed) = %d, want 0", code)
+	}
+	if out != "renamed profile \"old\" to \"renamed\" (2 extends reference(s) updated)\n" {
+		t.Errorf("KG(profile rename) stdout = %q, want confirmation with count", out)
+	}
+	cfg, err := config.Parse(readConfigBytes(t, path))
+	if err != nil {
+		t.Fatalf("config after rename does not re-parse: %v", err)
+	}
+	if _, ok := cfg.Profiles["old"]; ok {
+		t.Error("profile old still present after rename")
+	}
+	if _, ok := cfg.Profiles["renamed"]; !ok {
+		t.Error("profile renamed missing after rename")
+	}
+	if got, want := cfg.Profiles["child"].Extends, []string{"renamed"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("child.Extends = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Profiles["multi"].Extends, []string{"renamed", "base"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("multi.Extends = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Profiles["unrelated"].Extends, []string{"base"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unrelated.Extends = %#v, want %#v", got, want)
+	}
+	// The write is surgical: only the renamed header and the exact "old" tokens
+	// on extends lines changed; comments, other profiles, and variable values
+	// are byte-identical.
+	want := `# top comment
+
+[profiles.renamed]
+A = "1"
+
+[profiles.child]
+extends = "renamed"
+C = "1"
+
+[profiles.multi]
+extends = ["renamed", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.unrelated]
+extends = "base"
+U = "1"
+
+# trailing comment
+`
+	if got := string(readConfigBytes(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRunProfileRenameCountZero(t *testing.T) {
+	writeConfig(t, `[profiles.old]
+A = "1"
+
+[profiles.other]
+B = "2"
+`)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile rename old new) = %d, want 0", code)
+	}
+	if out != "renamed profile \"old\" to \"new\" (0 extends reference(s) updated)\n" {
+		t.Errorf("KG(profile rename) stdout = %q, want count 0", out)
+	}
+}
+
+func TestRunProfileRenameToExistingIsConfigError(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.new]
+B = "2"
+`
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename old new) = %d, want 1 (config error)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, `profile "new" already exists`) {
+		t.Errorf("stderr = %q, want already-exists message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename:\n%s\nwant:\n%s", got, src)
+	}
+}
+
+func TestRunProfileRenameMissingIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "ghost", "b"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename ghost b) = %d, want 1 (config error)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, `profile "ghost" not found`) {
+		t.Errorf("stderr = %q, want not-found message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rename of missing profile: %q", got)
+	}
+}
+
+func TestRunProfileRenameLeadingDashIsUsageError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	for _, args := range [][]string{
+		{"profile", "rename", "-aws", "new"},    // leading dash old
+		{"profile", "rename", "aws", "-new"},    // leading dash new
+		{"profile", "rename", "aws", "--bogus"}, // unknown flag
+	} {
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
+		}
+	}
+}
+
+func TestRunProfileRenameOutOfCharsetIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "aws", "b.c"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename aws b.c) = %d, want 1 (charset)", code)
+	}
+	if !strings.Contains(errOut, "outside [A-Za-z0-9_-]") {
+		t.Errorf("stderr = %q, want charset message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename: %q", got)
+	}
+}
+
+// TestRunProfileRenameBrokenResolutionRejected pins reachability safety at the
+// CLI layer: a rename whose result cannot resolve is a configuration error
+// (exit 1) rejected before any write, leaving the file byte-identical.
+func TestRunProfileRenameBrokenResolutionRejected(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.orphan]
+extends = "ghost"
+`
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename old new) = %d, want 1 (broken reachable set)", code)
+	}
+	if !strings.Contains(errOut, "unknown profile") {
+		t.Errorf("stderr = %q, want dangling-base message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename:\n%s\nwant:\n%s", got, src)
+	}
+}
+
+// TestRunProfileNamedProfileReachable pins user story 29: a profile literally
+// named `profile` stays reachable via `kg run profile <program>` because the
+// first token is verb-only (ADR-0007). The parse maps it to kindRun, and the
+// end-to-end path reaches runProfile (exit 1, program not found) rather than
+// the profile verb (which would exit 2).
+func TestRunProfileNamedProfileReachable(t *testing.T) {
+	cmd, err := parseKG([]string{"run", "profile", "terraform"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.kind != "run" || !reflect.DeepEqual(cmd.profiles, []string{"profile"}) || cmd.program != "terraform" {
+		t.Errorf("parseKG(run profile terraform) = %#v, want kind=run profiles=[profile] program=terraform", cmd)
+	}
+	writeConfig(t, `[profiles.profile]
+X = "1"
+`)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"run", "profile", "terraform"})
+	})
+	// Exit 1 (find program) proves it dispatched to kindRun; the profile verb
+	// would have been exit 2 (unknown op "terraform" or not-implemented).
+	if code != 1 {
+		t.Errorf("KG(run profile terraform) = %d, want 1 (kindRun: program not found)", code)
+	}
+	if !strings.Contains(errOut, "find program") {
+		t.Errorf("KG(run profile terraform) stderr = %q, want runner find-program error", errOut)
+	}
+}
+
+// configBytes returns the current $KEYGRP_CONFIG file contents, so mutation
+// tests can assert surgical writes and untouched files.
+func configBytes(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("KEYGRP_CONFIG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestRunProfileAdd(t *testing.T) {
+	src := `# keep me
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+# trailing
+`
+	writeConfig(t, src)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "add", "gcp", "GCP_PROJECT=my-project"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile add gcp) = %d, want 0", code)
+	}
+	if out != "profile \"gcp\" added\n" {
+		t.Errorf("KG(profile add gcp) stdout = %q, want confirmation", out)
+	}
+	// The write is surgical: the new block is appended at the end and every
+	// byte before it — comments and the aws profile — is unchanged.
+	want := `# keep me
+
+[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+# trailing
+
+[profiles.gcp]
+GCP_PROJECT = "my-project"
+`
+	if got := configBytes(t); got != want {
+		t.Errorf("config after add:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRunProfileAddSeedsVars(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	if code := KG([]string{"profile", "add", "gcp", "GCP_PROJECT=my-project", "TF_TOKEN=keychain://ci-token"}); code != 0 {
+		t.Fatalf("KG(profile add gcp ...) = %d, want 0", code)
+	}
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "gcp", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
+	}
+	want := "[profiles.gcp]\nGCP_PROJECT = \"my-project\"\nTF_TOKEN = \"keychain://ci-token\"\n"
+	if out != want {
+		t.Errorf("KG(profile show gcp --raw) = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileAddExistingIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "add", "aws", "B=2"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile add aws) = %d, want 1 (already exists)", code)
+	}
+	if !strings.Contains(errOut, `profile "aws" already exists`) {
+		t.Errorf("KG(profile add aws) stderr = %q, want already-exists message", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by rejected add: %q", got)
+	}
+}
+
+func TestRunProfileAddReservedKeyRejected(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	// add has no extends surface (extends is managed by set); the engine rejects
+	// the reserved key before any write.
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "add", "b", "extends=aws"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile add b extends=aws) = %d, want 1 (reserved key)", code)
+	}
+	if !strings.Contains(errOut, "reserved") {
+		t.Errorf("KG(profile add b extends=aws) stderr = %q, want reserved-key message", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by rejected add: %q", got)
+	}
+}
+
+// writeEditorScript writes an executable $EDITOR script running the given shell
+// body and returns its path.
+func writeEditorScript(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "editor.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestRunProfileAddEditor(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	// A fake $EDITOR that appends a variable to the temp file it is given.
+	editor := writeEditorScript(t, `printf 'EDIT = "from-editor"\n' >> "$1"`)
+	t.Setenv("EDITOR", editor)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "add", "gcp", "GCP=seed", "-e"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile add gcp -e) = %d, want 0", code)
+	}
+	if out != "profile \"gcp\" added\n" {
+		t.Errorf("KG(profile add gcp -e) stdout = %q, want confirmation", out)
+	}
+	// The edited variable is written alongside the seeded one.
+	code, out = captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "gcp", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
+	}
+	want := "[profiles.gcp]\nEDIT = \"from-editor\"\nGCP = \"seed\"\n"
+	if out != want {
+		t.Errorf("KG(profile show gcp --raw) = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileAddEditorNoop(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	// A no-op $EDITOR leaves the seeded block untouched; the seed is revalidated
+	// and written as-is.
+	editor := writeEditorScript(t, "exit 0")
+	t.Setenv("EDITOR", editor)
+	if code := KG([]string{"profile", "add", "gcp", "GCP=seed", "-e"}); code != 0 {
+		t.Fatalf("KG(profile add gcp -e) = %d, want 0", code)
+	}
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "gcp", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show gcp --raw) = %d, want 0", code)
+	}
+	if out != "[profiles.gcp]\nGCP = \"seed\"\n" {
+		t.Errorf("KG(profile show gcp --raw) = %q, want seeded var", out)
+	}
+}
+
+func TestRunProfileAddEditorUnset(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	t.Setenv("EDITOR", "")
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "add", "gcp", "-e"})
+	})
+	if code != 2 {
+		t.Errorf("KG(profile add gcp -e) = %d, want 2 (usage error: $EDITOR unset)", code)
+	}
+	if !strings.Contains(errOut, "EDITOR") {
+		t.Errorf("KG(profile add gcp -e) stderr = %q, want $EDITOR guidance", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by aborted edit: %q", got)
+	}
+}
+
+func TestRunProfileAddEditorFails(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	t.Setenv("EDITOR", filepath.Join(t.TempDir(), "no-such-editor"))
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "add", "gcp", "-e"})
+	})
+	if code != 2 {
+		t.Errorf("KG(profile add gcp -e) = %d, want 2 (usage error: editor failure)", code)
+	}
+	if !strings.Contains(errOut, "failed") {
+		t.Errorf("KG(profile add gcp -e) stderr = %q, want editor-failure message", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by failed edit: %q", got)
+	}
+}
+
+func TestRunProfileSetUpdatesVars(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nAWS_REGION = \"ap-southeast-1\"\n")
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "set", "aws", "AWS_REGION=us-west-2", "FOO=bar"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile set aws ...) = %d, want 0", code)
+	}
+	if out != "profile \"aws\" updated\n" {
+		t.Errorf("KG(profile set aws ...) stdout = %q, want confirmation", out)
+	}
+	code, out = captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "aws", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
+	}
+	want := "[profiles.aws]\nAWS_REGION = \"us-west-2\"\nFOO = \"bar\"\n"
+	if out != want {
+		t.Errorf("KG(profile show aws --raw) = %q, want %q", out, want)
+	}
+}
+
+func TestRunProfileSetExtends(t *testing.T) {
+	writeConfig(t, `[profiles.aws]
+A = "1"
+
+[profiles.base1]
+B1 = "1"
+
+[profiles.base2]
+B2 = "1"
+`)
+	// A single base replaces the extends list.
+	if code := KG([]string{"profile", "set", "aws", "extends=base1"}); code != 0 {
+		t.Fatalf("KG(profile set aws extends=base1) = %d, want 0", code)
+	}
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "aws", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
+	}
+	if out != "[profiles.aws]\nextends = [\"base1\"]\nA = \"1\"\n" {
+		t.Errorf("KG(profile show aws --raw) = %q, want single base", out)
+	}
+	// A comma-separated list sets multiple bases.
+	if code := KG([]string{"profile", "set", "aws", "extends=base1,base2"}); code != 0 {
+		t.Fatalf("KG(profile set aws extends=base1,base2) = %d, want 0", code)
+	}
+	code, out = captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "aws", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
+	}
+	if out != "[profiles.aws]\nextends = [\"base1\", \"base2\"]\nA = \"1\"\n" {
+		t.Errorf("KG(profile show aws --raw) = %q, want two bases", out)
+	}
+	// An empty value clears the bases.
+	if code := KG([]string{"profile", "set", "aws", "extends="}); code != 0 {
+		t.Fatalf("KG(profile set aws extends=) = %d, want 0", code)
+	}
+	code, out = captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "aws", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
+	}
+	if out != "[profiles.aws]\nA = \"1\"\n" {
+		t.Errorf("KG(profile show aws --raw) = %q, want bases cleared", out)
+	}
+}
+
+func TestRunProfileSetMissingIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "set", "ghost", "A=2"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile set ghost ...) = %d, want 1 (missing profile)", code)
+	}
+	if !strings.Contains(errOut, `profile "ghost" not found`) {
+		t.Errorf("KG(profile set ghost ...) stderr = %q, want not-found message", errOut)
+	}
+	// set never auto-creates: the config is unchanged.
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by set on missing profile: %q", got)
+	}
+}
+
+func TestRunProfileUnset(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\nB = \"2\"\n")
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "unset", "aws", "A"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile unset aws A) = %d, want 0", code)
+	}
+	if out != "profile \"aws\" updated\n" {
+		t.Errorf("KG(profile unset aws A) stdout = %q, want confirmation", out)
+	}
+	code, out = captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "show", "aws", "--raw"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile show aws --raw) = %d, want 0", code)
+	}
+	if out != "[profiles.aws]\nB = \"2\"\n" {
+		t.Errorf("KG(profile show aws --raw) = %q, want A removed", out)
+	}
+}
+
+func TestRunProfileUnsetMissingKeyIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	writeConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "unset", "aws", "GHOST"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile unset aws GHOST) = %d, want 1 (missing key)", code)
+	}
+	if !strings.Contains(errOut, `has no variable "GHOST"`) {
+		t.Errorf("KG(profile unset aws GHOST) stderr = %q, want missing-key message", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by unset of missing key: %q", got)
+	}
+}
+
+func TestRunProfileUnsetMissingProfileIsConfigError(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "unset", "ghost", "A"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile unset ghost A) = %d, want 1 (missing profile)", code)
+	}
+	if !strings.Contains(errOut, `profile "ghost" not found`) {
+		t.Errorf("KG(profile unset ghost A) stderr = %q, want not-found message", errOut)
+	}
+}
+
+func TestRunProfileLeadingDashNameIsUsageError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	// A name with a leading dash parses as a flag and is rejected at the argv
+	// layer, mirroring parseSecret (ADR-0012).
+	for _, args := range [][]string{
+		{"profile", "add", "-aws", "A=1"},
+		{"profile", "set", "-aws", "A=1"},
+		{"profile", "unset", "-aws", "A"},
+	} {
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
+		}
+	}
+}
+
+func TestRunProfileUnknownFlagIsUsageError(t *testing.T) {
+	writeConfig(t, profileFixture)
+	for _, args := range [][]string{
+		{"profile", "add", "aws", "--bogus"},
+		{"profile", "set", "aws", "--bogus"},
+		{"profile", "unset", "aws", "--bogus"},
+	} {
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
+		}
+	}
+}
+
+func TestRunProfileSetConflictInExtenderRejected(t *testing.T) {
+	src := `[profiles.base]
+B_VAR = "from-base"
+
+[profiles.child]
+extends = "base"
+SHARED = "from-child"
+`
+	writeConfig(t, src)
+	// base's own reachable set is fine after adding SHARED; the conflict
+	// surfaces in child, the extender — whole-config validation rejects the
+	// write before anything is touched.
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "set", "base", "SHARED=from-base"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile set base SHARED=from-base) = %d, want 1 (conflict in extender)", code)
+	}
+	if !strings.Contains(errOut, "no-shadowing conflict") {
+		t.Errorf("KG(profile set base ...) stderr = %q, want no-shadowing conflict", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by rejected set: %q", got)
+	}
+}
+
+func TestRunProfileSetCycleRejected(t *testing.T) {
+	src := `[profiles.a]
+extends = "b"
+A = "1"
+
+[profiles.b]
+B = "1"
+`
+	writeConfig(t, src)
+	// a already extends b; setting b to extend a closes the cycle.
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "set", "b", "extends=a"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile set b extends=a) = %d, want 1 (extends cycle)", code)
+	}
+	if !strings.Contains(errOut, "extends cycle") {
+		t.Errorf("KG(profile set b extends=a) stderr = %q, want extends cycle", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by rejected set: %q", got)
+	}
+}
+
+func TestRunProfileSetUnknownBaseRejected(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	writeConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "set", "a", "extends=ghost"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile set a extends=ghost) = %d, want 1 (unknown base)", code)
+	}
+	if !strings.Contains(errOut, "unknown profile") {
+		t.Errorf("KG(profile set a extends=ghost) stderr = %q, want unknown profile", errOut)
+	}
+	if got := configBytes(t); got != src {
+		t.Errorf("config changed by rejected set: %q", got)
+	}
+}
+
+func TestRunProfileKeychainRefRoundTrip(t *testing.T) {
+	writeConfig(t, "[profiles.aws]\nA = \"1\"\n")
+	if code := KG([]string{"profile", "add", "ci", "TF_TOKEN=keychain://ci-token"}); code != 0 {
+		t.Fatalf("KG(profile add ci ...) = %d, want 0", code)
+	}
+	// The keychain ref is written as a plain string, never resolved or verified.
+	if got := configBytes(t); !strings.Contains(got, `TF_TOKEN = "keychain://ci-token"`) {
+		t.Errorf("config after add = %q, want plain keychain ref", got)
+	}
+	if code := KG([]string{"profile", "unset", "ci", "TF_TOKEN"}); code != 0 {
+		t.Fatalf("KG(profile unset ci TF_TOKEN) = %d, want 0", code)
+	}
+	if got := configBytes(t); strings.Contains(got, "TF_TOKEN") {
+		t.Errorf("config after unset = %q, want TF_TOKEN removed", got)
 	}
 }

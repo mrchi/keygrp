@@ -17,6 +17,12 @@ a target program with `kg run <name> <program> [args...]`
 (shorthand `kgx <name> <program>`).
 _Avoid_: env group
 
+**Profile name**:
+A profile's identifier; restricted to `[A-Za-z0-9_-]` and enforced at parse
+time, so it is always a clean shell/argv token and never collides with the
+combination separator (ADR-0004).
+_Avoid_: dotted name, name with spaces
+
 **Base profile**:
 A profile named by another profile's `extends`; its variables are merged into
 the extending profile's effective variable set. Any profile can be a base, and
@@ -62,6 +68,12 @@ A `keychain://<ref>` value; the only way a secret appears in the config. It is
 resolved from the OS keychain at run time; the ref namespace is global across
 profiles.
 _Avoid_: keychain link, secret value
+
+**Ref name**:
+The `<ref>` identifier after `keychain://`; restricted to `[A-Za-z0-9_-]` and
+enforced at parse time. Conventionally lowercase dash-separated, e.g.
+`anthropic-api-key`.
+_Avoid_: nested path, ref with dots
 
 **Refs registry**:
 The file co-located with the config recording every ref kg has written; the

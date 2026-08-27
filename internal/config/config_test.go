@@ -286,6 +286,173 @@ AWS_REGION = "ap-southeast-1"
 	}
 }
 
+func TestParseRejectsOutOfCharsetProfileName(t *testing.T) {
+	// Profile names are restricted to [A-Za-z0-9_-] (ADR-0012); anything else
+	// is a configuration error that names the offending name and the charset.
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "dot",
+			data: `[profiles."a.b"]
+X = "1"
+`,
+			want: `profile "a.b": name contains a character outside [A-Za-z0-9_-]`,
+		},
+		{
+			name: "space",
+			data: `[profiles."my profile"]
+X = "1"
+`,
+			want: `profile "my profile": name contains a character outside [A-Za-z0-9_-]`,
+		},
+		{
+			name: "slash",
+			data: `[profiles."nested/path"]
+X = "1"
+`,
+			want: `profile "nested/path": name contains a character outside [A-Za-z0-9_-]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.data))
+			if err == nil {
+				t.Fatalf("Parse() = nil error, want error for profile name with a %s", tc.name)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Parse() error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseAcceptsInCharsetProfileNames(t *testing.T) {
+	// Hyphen (including leading), underscore, and digits are all in charset;
+	// a leading hyphen must parse at this layer (the argv layer rejects it).
+	data := []byte(`
+[profiles."-leading-dash"]
+X = "1"
+
+[profiles."with_underscore"]
+Y = "2"
+
+[profiles."digits123"]
+Z = "3"
+`)
+	cfg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	for _, name := range []string{"-leading-dash", "with_underscore", "digits123"} {
+		if _, ok := cfg.Profiles[name]; !ok {
+			t.Errorf("Parse() missing in-charset profile %q, got profiles %#v", name, cfg.Profiles)
+		}
+	}
+}
+
+func TestParseRejectsOutOfCharsetKeychainRef(t *testing.T) {
+	// A keychain:// ref name is restricted to [A-Za-z0-9_-] (ADR-0012); a ref
+	// with any other character fails even though the value is otherwise a
+	// well-formed keychain reference.
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "dot",
+			data: `[profiles.p]
+K = "keychain://ref.name"
+`,
+			want: `profile p: variable "K": keychain ref "ref.name" contains a character outside [A-Za-z0-9_-]`,
+		},
+		{
+			name: "slash",
+			data: `[profiles.p]
+K = "keychain://nested/path"
+`,
+			want: `profile p: variable "K": keychain ref "nested/path" contains a character outside [A-Za-z0-9_-]`,
+		},
+		{
+			name: "space",
+			data: `[profiles.p]
+K = "keychain://ref name"
+`,
+			want: `profile p: variable "K": keychain ref "ref name" contains a character outside [A-Za-z0-9_-]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.data))
+			if err == nil {
+				t.Fatalf("Parse() = nil error, want error for keychain ref with a %s", tc.name)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Parse() error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseAcceptsInCharsetKeychainRefs(t *testing.T) {
+	// Hyphen, underscore, and digits are all in charset for refs too.
+	data := []byte(`
+[profiles.p]
+A = "keychain://ref-underscore_123"
+B = "keychain://-leading-dash"
+`)
+	cfg, err := Parse(data)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	want := map[string]string{
+		"A": "keychain://ref-underscore_123",
+		"B": "keychain://-leading-dash",
+	}
+	if got := cfg.Profiles["p"].Vars; !reflect.DeepEqual(got, want) {
+		t.Errorf("p.Vars = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseRejectsOutOfCharsetExtendsName(t *testing.T) {
+	// An extends value names a profile, so it is held to the same charset as
+	// profile names (ADR-0012).
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "dot",
+			data: `[profiles.a]
+extends = "b.c"
+`,
+			want: `profile a: extends name "b.c" contains a character outside [A-Za-z0-9_-]`,
+		},
+		{
+			name: "dot in array",
+			data: `[profiles.a]
+extends = ["b", "c.d"]
+`,
+			want: `profile a: extends name "c.d" contains a character outside [A-Za-z0-9_-]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.data))
+			if err == nil {
+				t.Fatalf("Parse() = nil error, want error for extends name with a %s", tc.name)
+			}
+			if got := err.Error(); got != tc.want {
+				t.Errorf("Parse() error = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func mustParse(t *testing.T, data string) *Config {
 	t.Helper()
 	cfg, err := Parse([]byte(data))

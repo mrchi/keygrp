@@ -72,6 +72,11 @@ func completeKG(words []string, cfg *config.Config, refs []string) Result {
 			return Result{Candidates: candidates([]string{"set", "get", "delete", "list", "export", "import"}, "", prefix)}
 		}
 		return secretResult(toks, prefix, refs)
+	case "profile":
+		if len(toks) == 1 {
+			return Result{Candidates: filter(profileOpLines, prefix)}
+		}
+		return profileResult(toks, cfg, prefix)
 	case "check":
 		if len(toks) == 1 {
 			return Result{Candidates: candidates([]string{"--profile"}, "", prefix)}
@@ -160,7 +165,7 @@ func profileNames(cfg *config.Config) []string {
 // names appear only below `run` (and are the whole grammar of kgx's first
 // slot), never mixed into the verb position (ADR-0007).
 func frontCandidatesKG() []string {
-	return []string{"run", "secret", "check", "init", "completion", "--help"}
+	return []string{"run", "profile", "secret", "check", "init", "completion", "--help"}
 }
 
 // profileNamesWithCombo returns profile names for a position that may hold a
@@ -231,6 +236,102 @@ func secretResult(toks []string, prefix string, refs []string) Result {
 	return Result{} // list, or a ref/flag/file position already filled: nothing more to complete
 }
 
+// profileOpLines are the `kg profile <op>` candidate lines (ADR-0006), authored
+// once mirroring cli.go's profileOpsText. The secret ops share three words
+// ("list", "set", "delete") that describe different surfaces here, and
+// candidateDescriptions is a flat map that can only hold one description per
+// value — so the profile op list is rendered explicitly rather than through the
+// shared map.
+var profileOpLines = []string{
+	"list\tlist profile names",
+	"show\tshow a profile's effective variables",
+	"add\tcreate a profile",
+	"set\tset or update a profile's variables",
+	"unset\tremove a profile's variables",
+	"delete\tdelete a profile",
+	"rename\trename a profile",
+}
+
+// profileResult completes below the profile subcommand. toks[0] is "profile".
+// The read ops (list/show) complete fully; the mutation ops complete their
+// profile-name positions from the config, degrading to static candidates when
+// the config is missing or broken.
+func profileResult(toks []string, cfg *config.Config, prefix string) Result {
+	op := toks[1]
+	after := toks[2:] // already-typed tokens after the op
+	switch op {
+	case "list":
+		if len(after) == 0 {
+			return Result{Candidates: candidates([]string{"--json"}, "", prefix)}
+		}
+	case "show":
+		hasName := false
+		have := map[string]bool{}
+		for _, a := range after {
+			switch a {
+			case "--raw", "--json":
+				have[a] = true
+			default:
+				hasName = true
+			}
+		}
+		var flags []string
+		if !have["--raw"] {
+			flags = append(flags, "--raw")
+		}
+		if !have["--json"] {
+			flags = append(flags, "--json")
+		}
+		if !hasName {
+			return Result{Candidates: candidates(append(flags, profileNames(cfg)...), profileLabel, prefix)}
+		}
+		return Result{Candidates: candidates(flags, "", prefix)}
+	case "add":
+		if len(after) == 0 {
+			return Result{Candidates: candidates([]string{"-e"}, "", prefix)}
+		}
+	case "set":
+		if len(after) == 0 {
+			return Result{Candidates: candidates(profileNames(cfg), profileLabel, prefix)}
+		}
+	case "unset":
+		if len(after) == 0 {
+			return Result{Candidates: candidates(profileNames(cfg), profileLabel, prefix)}
+		}
+		if len(after) == 1 {
+			return Result{Candidates: candidates(profileVarNames(cfg, after[0]), "", prefix)}
+		}
+	case "delete":
+		if len(after) == 0 {
+			return Result{Candidates: candidates(append([]string{"--force"}, profileNames(cfg)...), profileLabel, prefix)}
+		}
+	case "rename":
+		if len(after) == 0 {
+			return Result{Candidates: candidates(profileNames(cfg), profileLabel, prefix)}
+		}
+	}
+	return Result{} // a filled position: nothing more to complete
+}
+
+// profileVarNames returns the declared variable names of a profile, for
+// completing `kg profile unset <name>`. Bare values: variable names are
+// self-evident, like shell names.
+func profileVarNames(cfg *config.Config, name string) []string {
+	if cfg == nil {
+		return nil
+	}
+	p, ok := cfg.Profiles[name]
+	if !ok {
+		return nil
+	}
+	keys := make([]string, 0, len(p.Vars))
+	for k := range p.Vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // safeRefs drops refs that collide with the reserved "__directive:" protocol
 // namespace.
 func safeRefs(refs []string) []string {
@@ -255,6 +356,7 @@ func isReserved(s string) bool {
 // summary in usage, so their descriptions are authored here.
 var candidateDescriptions = map[string]string{
 	"run":             "run a program with a combination's env",
+	"profile":         "manage profiles in the config file",
 	"secret":          "manage secrets in the OS keychain",
 	"check":           "validate config and keychain refs",
 	"init":            "install completion, create config & authorize keychain",
@@ -272,6 +374,17 @@ var candidateDescriptions = map[string]string{
 	"--skip-existing": "skip refs that already exist",
 	"--profile":       "combination to validate",
 	"--shell":         "shell to install",
+	// Profile ops that share a word with secret ("list", "set", "delete") keep
+	// secret's description in this flat map; the profile op list renders those
+	// with their own wording via profileOpLines.
+	"show":    "show a profile's effective variables",
+	"add":     "create a profile",
+	"unset":   "remove a profile's variables",
+	"rename":  "rename a profile",
+	"--json":  "emit structured JSON output",
+	"--raw":   "print the raw declaration",
+	"--force": "skip the y/N confirmation",
+	"-e":      "edit the profile in $EDITOR",
 }
 
 // Dynamic candidate values (profile names, secret refs) carry a generic label
