@@ -67,8 +67,7 @@ func TestParseKG(t *testing.T) {
 		{[]string{"profile", "show", "aws", "--raw"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true}},
 		{[]string{"profile", "show", "--json", "aws"}, command{kind: "profile", profileOp: "show", profileName: "aws", jsonOut: true}},
 		{[]string{"profile", "show", "aws", "--raw", "--json"}, command{kind: "profile", profileOp: "show", profileName: "aws", rawOut: true, jsonOut: true}},
-		// add/set/unset are fully parsed; delete/rename stash their remaining
-		// args verbatim until tickets 05/06 parse them.
+		// Every profile op is fully parsed.
 		{[]string{"profile", "add", "aws"}, command{kind: "profile", profileOp: "add", profileName: "aws"}},
 		{[]string{"profile", "add", "aws", "A=1"}, command{kind: "profile", profileOp: "add", profileName: "aws", vars: []string{"A=1"}}},
 		{[]string{"profile", "add", "aws", "A=1", "B=2"}, command{kind: "profile", profileOp: "add", profileName: "aws", vars: []string{"A=1", "B=2"}}},
@@ -80,7 +79,7 @@ func TestParseKG(t *testing.T) {
 		{[]string{"profile", "delete", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws"}},
 		{[]string{"profile", "delete", "--force", "aws"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
 		{[]string{"profile", "delete", "aws", "--force"}, command{kind: "profile", profileOp: "delete", profileName: "aws", force: true}},
-		{[]string{"profile", "rename", "a", "b"}, command{kind: "profile", profileOp: "rename", args: []string{"a", "b"}}},
+		{[]string{"profile", "rename", "a", "b"}, command{kind: "profile", profileOp: "rename", profileName: "a", profileNewName: "b"}},
 		{[]string{"check"}, command{kind: "check"}},
 		{[]string{"check", "--profile", "aws"}, command{kind: "check", checkTargets: []string{"aws"}}},
 		{[]string{"check", "--profile", "aws,gcp"}, command{kind: "check", checkTargets: []string{"aws", "gcp"}}},
@@ -365,6 +364,12 @@ func TestParseKGErrors(t *testing.T) {
 		{"profile", "unset", "aws"},                       // unset needs at least one KEY
 		{"profile", "unset", "-aws", "A"},                 // leading dash name reads as a flag
 		{"profile", "unset", "aws", "--bogus"},            // unknown flag
+		{"profile", "rename"},                             // rename needs old and new
+		{"profile", "rename", "a"},                        // rename needs new
+		{"profile", "rename", "a", "b", "c"},              // rename takes exactly two
+		{"profile", "rename", "-a", "b"},                  // leading dash old reads as a flag
+		{"profile", "rename", "a", "-b"},                  // leading dash new reads as a flag
+		{"profile", "rename", "a", "--bogus"},             // unknown flag
 	}
 	for _, args := range cases {
 		if _, err := parseKG(args); err == nil {
@@ -1088,23 +1093,213 @@ func TestRunProfileDeleteUsageErrors(t *testing.T) {
 	}
 }
 
-// TestRunProfileMutationOpsStubbed pins the remaining stub: only rename still
-// exits 2 deterministically until ticket 06 implements it. add, set, unset, and
-// delete are implemented and have their own behavior tests.
-func TestRunProfileMutationOpsStubbed(t *testing.T) {
+// renameFixture has a base (old), two extenders (child with a single-form
+// extends, multi with an array-form extends), and an unrelated profile, so the
+// rename tests cover the reported count, both extends forms, and byte
+// preservation.
+const renameFixture = `# top comment
+
+[profiles.old]
+A = "1"
+
+[profiles.child]
+extends = "old"
+C = "1"
+
+[profiles.multi]
+extends = ["old", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.unrelated]
+extends = "base"
+U = "1"
+
+# trailing comment
+`
+
+// TestRunProfileRename pins the rename end-to-end: the block is renamed, both
+// single- and array-form extends references are rewritten, the count is
+// reported on stdout, the file re-parses with the profile under the new name
+// and gone under the old, and bytes outside the renamed header and the edited
+// extends lines are byte-identical.
+func TestRunProfileRename(t *testing.T) {
+	path := writeProfileConfig(t, renameFixture)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "rename", "old", "renamed"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile rename old renamed) = %d, want 0", code)
+	}
+	if out != "renamed profile \"old\" to \"renamed\" (2 extends reference(s) updated)\n" {
+		t.Errorf("KG(profile rename) stdout = %q, want confirmation with count", out)
+	}
+	cfg, err := config.Parse(readConfigBytes(t, path))
+	if err != nil {
+		t.Fatalf("config after rename does not re-parse: %v", err)
+	}
+	if _, ok := cfg.Profiles["old"]; ok {
+		t.Error("profile old still present after rename")
+	}
+	if _, ok := cfg.Profiles["renamed"]; !ok {
+		t.Error("profile renamed missing after rename")
+	}
+	if got, want := cfg.Profiles["child"].Extends, []string{"renamed"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("child.Extends = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Profiles["multi"].Extends, []string{"renamed", "base"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("multi.Extends = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Profiles["unrelated"].Extends, []string{"base"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unrelated.Extends = %#v, want %#v", got, want)
+	}
+	// The write is surgical: only the renamed header and the exact "old" tokens
+	// on extends lines changed; comments, other profiles, and variable values
+	// are byte-identical.
+	want := `# top comment
+
+[profiles.renamed]
+A = "1"
+
+[profiles.child]
+extends = "renamed"
+C = "1"
+
+[profiles.multi]
+extends = ["renamed", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.unrelated]
+extends = "base"
+U = "1"
+
+# trailing comment
+`
+	if got := string(readConfigBytes(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRunProfileRenameCountZero(t *testing.T) {
+	writeConfig(t, `[profiles.old]
+A = "1"
+
+[profiles.other]
+B = "2"
+`)
+	code, out := captureStream(t, &os.Stdout, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 0 {
+		t.Errorf("KG(profile rename old new) = %d, want 0", code)
+	}
+	if out != "renamed profile \"old\" to \"new\" (0 extends reference(s) updated)\n" {
+		t.Errorf("KG(profile rename) stdout = %q, want count 0", out)
+	}
+}
+
+func TestRunProfileRenameToExistingIsConfigError(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.new]
+B = "2"
+`
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename old new) = %d, want 1 (config error)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, `profile "new" already exists`) {
+		t.Errorf("stderr = %q, want already-exists message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename:\n%s\nwant:\n%s", got, src)
+	}
+}
+
+func TestRunProfileRenameMissingIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "ghost", "b"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename ghost b) = %d, want 1 (config error)", code)
+	}
+	if !strings.HasPrefix(errOut, "kg: ") {
+		t.Errorf("stderr = %q, want kg: prefix (ADR-0013)", errOut)
+	}
+	if !strings.Contains(errOut, `profile "ghost" not found`) {
+		t.Errorf("stderr = %q, want not-found message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rename of missing profile: %q", got)
+	}
+}
+
+func TestRunProfileRenameLeadingDashIsUsageError(t *testing.T) {
 	writeConfig(t, profileFixture)
 	for _, args := range [][]string{
-		{"profile", "rename", "aws", "b"},
+		{"profile", "rename", "-aws", "new"},    // leading dash old
+		{"profile", "rename", "aws", "-new"},    // leading dash new
+		{"profile", "rename", "aws", "--bogus"}, // unknown flag
 	} {
-		code, errOut := captureStream(t, &os.Stderr, func() int {
-			return KG(args)
-		})
-		if code != 2 {
-			t.Errorf("KG(%v) = %d, want 2 (not yet implemented)", args, code)
+		if code := KG(args); code != 2 {
+			t.Errorf("KG(%v) = %d, want 2 (usage error)", args, code)
 		}
-		if !strings.Contains(errOut, "not yet implemented") {
-			t.Errorf("KG(%v) stderr = %q, want not-yet-implemented message", args, errOut)
-		}
+	}
+}
+
+func TestRunProfileRenameOutOfCharsetIsConfigError(t *testing.T) {
+	src := "[profiles.aws]\nA = \"1\"\n"
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "aws", "b.c"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename aws b.c) = %d, want 1 (charset)", code)
+	}
+	if !strings.Contains(errOut, "outside [A-Za-z0-9_-]") {
+		t.Errorf("stderr = %q, want charset message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename: %q", got)
+	}
+}
+
+// TestRunProfileRenameBrokenResolutionRejected pins reachability safety at the
+// CLI layer: a rename whose result cannot resolve is a configuration error
+// (exit 1) rejected before any write, leaving the file byte-identical.
+func TestRunProfileRenameBrokenResolutionRejected(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.orphan]
+extends = "ghost"
+`
+	path := writeProfileConfig(t, src)
+	code, errOut := captureStream(t, &os.Stderr, func() int {
+		return KG([]string{"profile", "rename", "old", "new"})
+	})
+	if code != 1 {
+		t.Errorf("KG(profile rename old new) = %d, want 1 (broken reachable set)", code)
+	}
+	if !strings.Contains(errOut, "unknown profile") {
+		t.Errorf("stderr = %q, want dangling-base message", errOut)
+	}
+	if got := string(readConfigBytes(t, path)); got != src {
+		t.Errorf("file changed by rejected rename:\n%s\nwant:\n%s", got, src)
 	}
 }
 

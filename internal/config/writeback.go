@@ -95,6 +95,173 @@ func DeleteProfile(path, name string) error {
 	return atomicWrite(path, out)
 }
 
+// RenameProfile renames the [profiles.<oldName>] block in the config file at
+// path to [profiles.<newName>] and rewrites every extends reference to
+// <oldName> in the file to <newName>, returning the number of extends
+// references rewritten.
+//
+// The rewrite is surgical: only the renamed block's header line and the exact
+// <oldName> string tokens on extends lines — in the renamed profile's own block
+// and in every other profile block — are changed; every other byte (comments,
+// the gap before the next profile, other profiles, variable values) is
+// byte-identical. A variable value with the same text is never rewritten.
+//
+// The candidate state is validated against the resolution rules before anything
+// is written (the same whole-config validation as WriteProfile): a violation —
+// an unknown base, extends cycle, or no-shadowing conflict in any reachable set
+// — rejects the write, returning the underlying resolution error and leaving
+// the file untouched (fail-fast, ADR-0012).
+//
+// <oldName> must exist and <newName> must not; both are checked before the
+// transform. <newName> must be a valid name ([A-Za-z0-9_-]); a name outside the
+// charset is rejected up front, mirroring AddProfile, so the renamed header
+// cannot silently parse as nested tables. The written file always re-parses.
+func RenameProfile(path, oldName, newName string) (int, error) {
+	if !validName(newName) {
+		return 0, fmt.Errorf("profile %q: name contains a character outside %s", newName, nameCharset)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	if _, ok := locateProfileBlock(raw, oldName); !ok {
+		return 0, fmt.Errorf("profile %q not found in %s", oldName, path)
+	}
+	if _, ok := locateProfileBlock(raw, newName); ok {
+		return 0, fmt.Errorf("profile %q already exists in %s", newName, path)
+	}
+
+	out, count := renameRaw(raw, oldName, newName)
+
+	// Belt-and-braces over the surgical rewrite: the bytes about to be written
+	// must re-parse and resolve. Reject without writing if they would not.
+	cfg, err := Parse(out)
+	if err != nil {
+		return 0, err
+	}
+	for _, n := range sortedProfileNames(cfg.Profiles) {
+		if _, err := cfg.Effective(n); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := atomicWrite(path, out); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+// renameRaw performs the surgical text transform that renames a profile block:
+// the [profiles.<oldName>] header becomes [profiles.<newName>], and every TOML
+// string token — basic ("...") or literal ('...') — equal to <oldName> on an
+// extends line is replaced with <newName>, in every profile block in the file.
+// It returns the transformed bytes and the number of extends references
+// rewritten. Only extends lines are touched: a variable value of the same text
+// is never rewritten. Multi-line extends arrays are followed by tracking the
+// array's bracket balance (ignoring brackets inside string literals).
+func renameRaw(raw []byte, oldName, newName string) ([]byte, int) {
+	oldHeader := "[profiles." + oldName + "]"
+	newHeader := "[profiles." + newName + "]"
+	oldBasic := `"` + oldName + `"`
+	newBasic := `"` + newName + `"`
+	oldLiteral := `'` + oldName + `'`
+	newLiteral := `'` + newName + `'`
+
+	out := make([]byte, 0, len(raw))
+	count := 0
+	inProfileBlock := false
+	arrayBalance := 0
+
+	for pos := 0; pos <= len(raw); {
+		lineEnd := pos
+		for lineEnd < len(raw) && raw[lineEnd] != '\n' {
+			lineEnd++
+		}
+		line := raw[pos:lineEnd]
+		trimmed := strings.TrimSpace(string(line))
+
+		if strings.HasPrefix(trimmed, "[") {
+			// A table header ends any open extends array and updates block
+			// membership. Only the exact [profiles.<oldName>] header is renamed.
+			arrayBalance = 0
+			if trimmed == oldHeader {
+				out = append(out, strings.Replace(string(line), oldHeader, newHeader, 1)...)
+				inProfileBlock = true // the renamed block is still a profile block
+			} else {
+				out = append(out, line...)
+				inProfileBlock = isProfilesHeader(trimmed)
+			}
+		} else if inProfileBlock && (arrayBalance > 0 || isExtendsLine(trimmed)) {
+			original := string(line)
+			rewritten := strings.ReplaceAll(original, oldBasic, newBasic)
+			rewritten = strings.ReplaceAll(rewritten, oldLiteral, newLiteral)
+			count += strings.Count(original, oldBasic) + strings.Count(original, oldLiteral)
+			out = append(out, rewritten...)
+			arrayBalance += bracketBalance(rewritten)
+			if arrayBalance < 0 {
+				arrayBalance = 0
+			}
+		} else {
+			out = append(out, line...)
+		}
+
+		if lineEnd >= len(raw) {
+			break
+		}
+		out = append(out, '\n')
+		pos = lineEnd + 1
+	}
+	return out, count
+}
+
+// isProfilesHeader reports whether trimmed is a [profiles.<name>] table header.
+func isProfilesHeader(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "[profiles.") && strings.HasSuffix(trimmed, "]")
+}
+
+// isExtendsLine reports whether trimmed is an `extends = ...` key-value line.
+func isExtendsLine(trimmed string) bool {
+	if !strings.HasPrefix(trimmed, "extends") {
+		return false
+	}
+	rest := strings.TrimSpace(trimmed[len("extends"):])
+	return strings.HasPrefix(rest, "=")
+}
+
+// bracketBalance returns the net count of unclosed '[' in s (opens minus
+// closes), ignoring brackets inside TOML string literals (basic and literal),
+// so a multi-line extends array's extent is measured without being thrown off
+// by a bracket that happens to appear in a string value.
+func bracketBalance(s string) int {
+	balance := 0
+	inBasic := false
+	inLiteral := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case inBasic:
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				inBasic = false
+			}
+		case inLiteral:
+			if c == '\'' {
+				inLiteral = false
+			}
+		case c == '"':
+			inBasic = true
+		case c == '\'':
+			inLiteral = true
+		case c == '[':
+			balance++
+		case c == ']':
+			balance--
+		}
+	}
+	return balance
+}
+
 // validateDeleteCandidate builds the config the file would contain after the
 // profile is removed and validates every remaining profile in it under the same
 // rules kg run applies. Validating only the surviving profiles is required:

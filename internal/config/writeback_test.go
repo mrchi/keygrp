@@ -711,3 +711,349 @@ func TestAddProfileRejectionLeavesFileUntouched(t *testing.T) {
 		t.Errorf("config dir after rejected add has %d entries, want only config.toml", len(entries))
 	}
 }
+
+// TestRenameProfileSurgical pins the surgical write: only the renamed block's
+// header and the exact <old> string tokens on extends lines change. Every other
+// byte — comments, other profiles, variable values, a variable whose value
+// happens to equal the old name — is byte-identical, and the count reports the
+// rewritten references (single and array forms).
+func TestRenameProfileSurgical(t *testing.T) {
+	src := `# top comment
+# second line
+
+[profiles.old]
+A = "1"
+
+# between profiles comment
+
+[profiles.child]
+extends = "old"
+C = "1"
+
+[profiles.multi]
+extends = ["old", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.varholder]
+FOO = "old"
+
+# trailing comment
+`
+	path := writeTempConfig(t, src)
+
+	count, err := RenameProfile(path, "old", "renamed")
+	if err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("RenameProfile() count = %d, want 2", count)
+	}
+
+	want := `# top comment
+# second line
+
+[profiles.renamed]
+A = "1"
+
+# between profiles comment
+
+[profiles.child]
+extends = "renamed"
+C = "1"
+
+[profiles.multi]
+extends = ["renamed", "base"]
+M = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.varholder]
+FOO = "old"
+
+# trailing comment
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRenameProfileReParses pins that the renamed file re-parses with the
+// profile present under its new name, gone under the old, and extends
+// references pointing at the new name.
+func TestRenameProfileReParses(t *testing.T) {
+	src := `[profiles.aws]
+AWS_REGION = "ap-southeast-1"
+
+[profiles.terraform]
+extends = "aws"
+TF_TOKEN = "plaintext-token"
+`
+	path := writeTempConfig(t, src)
+
+	if _, err := RenameProfile(path, "aws", "aws-prod"); err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+
+	cfg := mustParse(t, string(readFile(t, path)))
+	if _, ok := cfg.Profiles["aws"]; ok {
+		t.Error("aws still present after rename")
+	}
+	if _, ok := cfg.Profiles["aws-prod"]; !ok {
+		t.Error("aws-prod missing after rename")
+	}
+	if got, want := cfg.Profiles["terraform"].Extends, []string{"aws-prod"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("terraform.Extends = %#v, want %#v", got, want)
+	}
+}
+
+func TestRenameProfileCountZero(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.other]
+B = "2"
+`
+	path := writeTempConfig(t, src)
+
+	count, err := RenameProfile(path, "old", "new")
+	if err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+	if count != 0 {
+		t.Errorf("RenameProfile() count = %d, want 0", count)
+	}
+
+	want := `[profiles.new]
+A = "1"
+
+[profiles.other]
+B = "2"
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRenameProfileToExistingRejected(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.new]
+B = "2"
+`
+	path := writeTempConfig(t, src)
+
+	_, err := RenameProfile(path, "old", "new")
+	if err == nil {
+		t.Fatal("RenameProfile() = nil error, want already-exists error")
+	}
+	if !strings.Contains(err.Error(), `profile "new" already exists`) {
+		t.Errorf("error = %v, want already-exists error", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+func TestRenameProfileNotFound(t *testing.T) {
+	path := writeTempConfig(t, "[profiles.a]\nA = \"1\"\n")
+	_, err := RenameProfile(path, "ghost", "b")
+	if err == nil {
+		t.Fatal("RenameProfile() = nil error, want not found")
+	}
+	if !strings.Contains(err.Error(), `profile "ghost" not found`) {
+		t.Errorf("error = %v, want profile not found", err)
+	}
+	assertUnchanged(t, path, "[profiles.a]\nA = \"1\"\n")
+}
+
+func TestRenameProfileRejectsBadNewName(t *testing.T) {
+	src := "[profiles.a]\nA = \"1\"\n"
+	path := writeTempConfig(t, src)
+	_, err := RenameProfile(path, "a", "a.b")
+	if err == nil {
+		t.Fatal("RenameProfile() = nil error, want charset rejection")
+	}
+	if !strings.Contains(err.Error(), "outside [A-Za-z0-9_-]") {
+		t.Errorf("error = %v, want charset rejection", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+// TestRenameProfileRejectsBrokenResolution pins reachability safety: the whole
+// candidate state is validated before any write, so a config that cannot
+// resolve — here a pre-existing dangling base unrelated to the rename — rejects
+// the write with the file untouched (fail-fast, ADR-0012).
+func TestRenameProfileRejectsBrokenResolution(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.orphan]
+extends = "ghost"
+`
+	path := writeTempConfig(t, src)
+
+	_, err := RenameProfile(path, "old", "new")
+	if err == nil {
+		t.Fatal("RenameProfile() = nil error, want dangling-base rejection")
+	}
+	if !strings.Contains(err.Error(), "unknown profile") {
+		t.Errorf("error = %v, want dangling base surfaced as unknown profile", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+// TestRenameProfileSelfReferenceCycleRejected pins that the renamed profile's
+// own extends is rewritten when it references itself: renaming old→new turns
+// `extends = "old"` in the renamed block into `extends = "new"`, an extends
+// cycle that the whole-config validation rejects before any write.
+func TestRenameProfileSelfReferenceCycleRejected(t *testing.T) {
+	src := `[profiles.old]
+extends = "old"
+A = "1"
+`
+	path := writeTempConfig(t, src)
+
+	_, err := RenameProfile(path, "old", "new")
+	if err == nil {
+		t.Fatal("RenameProfile() = nil error, want extends cycle")
+	}
+	if !strings.Contains(err.Error(), "extends cycle") {
+		t.Errorf("error = %v, want extends cycle", err)
+	}
+	assertUnchanged(t, path, src)
+}
+
+// TestRenameProfileRewritesLiteralQuotes pins that a single-quoted (TOML
+// literal string) extends reference is rewritten too, keeping its quote style.
+func TestRenameProfileRewritesLiteralQuotes(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.child]
+extends = 'old'
+C = "1"
+`
+	path := writeTempConfig(t, src)
+
+	count, err := RenameProfile(path, "old", "new")
+	if err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("RenameProfile() count = %d, want 1", count)
+	}
+
+	want := `[profiles.new]
+A = "1"
+
+[profiles.child]
+extends = 'new'
+C = "1"
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRenameProfileMultiLineExtendsArray pins that an extends array spanning
+// multiple lines is followed to its closing bracket, so a reference on a
+// continuation line is rewritten and a comment inside the array is preserved.
+func TestRenameProfileMultiLineExtendsArray(t *testing.T) {
+	src := `[profiles.old]
+A = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.child]
+extends = [
+  "old",
+  "base",  # comment inside the array
+]
+C = "1"
+`
+	path := writeTempConfig(t, src)
+
+	count, err := RenameProfile(path, "old", "new")
+	if err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+	if count != 1 {
+		t.Errorf("RenameProfile() count = %d, want 1", count)
+	}
+
+	want := `[profiles.new]
+A = "1"
+
+[profiles.base]
+B = "1"
+
+[profiles.child]
+extends = [
+  "new",
+  "base",  # comment inside the array
+]
+C = "1"
+`
+	if got := string(readFile(t, path)); got != want {
+		t.Errorf("renamed config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRenameProfileLeavesNoStrayTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RenameProfile(path, "a", "b"); err != nil {
+		t.Fatalf("RenameProfile() error = %v", err)
+	}
+
+	// The temp file was created in the config's directory and renamed away: no
+	// stray temp remains, and the file keeps the 0600 convention.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("config dir after rename = %v, want only config.toml", names)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("config mode after rename = %v, want 0600", got)
+	}
+}
+
+func TestRenameProfileRejectionLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	src := "[profiles.a]\nA = \"1\"\n\n[profiles.b]\nextends = \"a\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RenameProfile(path, "a", "b"); err == nil {
+		t.Fatal("RenameProfile() = nil error, want already-exists rejection")
+	}
+
+	// No write happened: bytes are unchanged and no temp file was left behind.
+	assertUnchanged(t, path, src)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.toml" {
+		t.Errorf("config dir after rejected rename has %d entries, want only config.toml", len(entries))
+	}
+}

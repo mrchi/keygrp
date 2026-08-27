@@ -691,9 +691,8 @@ func parseSecret(cmd command, rest []string) (command, error) {
 // parseProfile parses `kg profile <op> ...` (ADR-0012), mirroring parseSecret:
 // a bare invocation lists the ops, a leading -h/--help resolves verb help, and
 // op-level help is resolved before any op state — so `kg profile bogus --help`
-// stays an unknown-op error (ADR-0008). list and show are fully parsed; the
-// mutation ops are recognized but stash their remaining args verbatim, with
-// their full parse/validation landing in tickets 04/05/06.
+// stays an unknown-op error (ADR-0008). Every op is fully parsed; a name with a
+// leading dash reads as a flag and is rejected at the argv layer (ADR-0012).
 func parseProfile(cmd command, rest []string) (command, error) {
 	if len(rest) == 0 {
 		return cmd, fmt.Errorf("usage: kg profile {list|show|add|set|unset|delete|rename}")
@@ -816,9 +815,24 @@ func parseProfile(cmd command, rest []string) (command, error) {
 			return cmd, fmt.Errorf("usage: kg profile delete <name> [--force]")
 		}
 	case opRename:
-		// Full parse and validation land in ticket 06; keep the remaining
-		// tokens verbatim so that ticket has the raw argv to work from.
-		cmd.args = rest
+		for _, a := range rest {
+			switch {
+			case strings.HasPrefix(a, "-"):
+				// A name (or anything) with a leading dash reads as a flag and is
+				// rejected here, mirroring add (ADR-0012): names never start with
+				// "-" at the argv layer.
+				return cmd, fmt.Errorf("unknown flag %q for profile rename", a)
+			case cmd.profileName == "":
+				cmd.profileName = a
+			case cmd.profileNewName == "":
+				cmd.profileNewName = a
+			default:
+				return cmd, fmt.Errorf("usage: kg profile rename <old> <new>")
+			}
+		}
+		if cmd.profileName == "" || cmd.profileNewName == "" {
+			return cmd, fmt.Errorf("usage: kg profile rename <old> <new>")
+		}
 	default:
 		return cmd, fmt.Errorf("unknown profile operation %q", cmd.profileOp)
 	}
@@ -854,8 +868,7 @@ func runProfile(cmd command) int {
 }
 
 // runProfileCmd implements the `kg profile` verb (ADR-0012). list and show are
-// the read path; add, set, unset, and delete are implemented; rename is stubbed
-// here — exit 2, deterministically — until ticket 06 replaces it.
+// the read path; add, set, unset, delete, and rename are the mutation path.
 func runProfileCmd(cmd command) int {
 	switch cmd.profileOp {
 	case opList, opShow:
@@ -864,6 +877,8 @@ func runProfileCmd(cmd command) int {
 		return runProfileMutation(cmd)
 	case opDelete:
 		return runProfileDelete(cmd)
+	case opRename:
+		return runProfileRename(cmd)
 	default:
 		return fail(2, "profile %s is not yet implemented", cmd.profileOp)
 	}
@@ -904,6 +919,33 @@ func runProfileDelete(cmd command) int {
 	if err := config.DeleteProfile(path, cmd.profileName); err != nil {
 		return fail(1, "%v", err)
 	}
+	return 0
+}
+
+// runProfileRename implements `kg profile rename <old> <new>` (ADR-0012): it
+// renames the profile block and rewrites every extends reference to <old> in
+// the file through the write-back engine, printing how many references were
+// updated. Renaming a missing profile, to an existing name, or into a state
+// that cannot resolve is a configuration error (exit 1) rejected before any
+// write, leaving the file untouched.
+func runProfileRename(cmd command) int {
+	path := configPath()
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	warnPermissive(path)
+	if _, ok := cfg.Profiles[cmd.profileName]; !ok {
+		return fail(1, "profile %q not found in %s", cmd.profileName, path)
+	}
+	if _, ok := cfg.Profiles[cmd.profileNewName]; ok {
+		return fail(1, "profile %q already exists in %s", cmd.profileNewName, path)
+	}
+	count, err := config.RenameProfile(path, cmd.profileName, cmd.profileNewName)
+	if err != nil {
+		return fail(1, "%v", err)
+	}
+	fmt.Printf("renamed profile %q to %q (%d extends reference(s) updated)\n", cmd.profileName, cmd.profileNewName, count)
 	return 0
 }
 
